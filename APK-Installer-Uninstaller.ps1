@@ -1,14 +1,63 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Validates the availability of the Android Debug Bridge binary prior to graphical interface initialization.
+# Check if ADB is available. If not, prompt the user to download and configure it.
 $adbExists = Get-Command "adb.exe" -ErrorAction SilentlyContinue
 if (-not $adbExists) {
-    [System.Windows.Forms.MessageBox]::Show("The 'adb.exe' binary was not found in the system PATH or execution directory. Android Platform Tools installation is required.", "Critical Initialization Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    exit
+    $msgResult = [System.Windows.Forms.MessageBox]::Show("The 'adb.exe' binary was not found in the system PATH.`n`nWould you like this tool to automatically download Android Platform Tools from Google and configure it for you?", "ADB Not Found", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+    
+    if ($msgResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+        $dlForm = New-Object System.Windows.Forms.Form
+        $dlForm.Text = "Installation Process"
+        $dlForm.Size = New-Object System.Drawing.Size(350, 120)
+        $dlForm.StartPosition = "CenterScreen"
+        $dlForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $dlForm.ControlBox = $false
+        
+        $dlLabel = New-Object System.Windows.Forms.Label
+        $dlLabel.Text = "Downloading Android Platform Tools...`nPlease wait, this may take a minute."
+        $dlLabel.Location = New-Object System.Drawing.Point(20, 25)
+        $dlLabel.AutoSize = $true
+        $dlForm.Controls.Add($dlLabel)
+        
+        $dlForm.Show()
+        [System.Windows.Forms.Application]::DoEvents()
+        
+        try {
+            $installDir = Join-Path $env:LOCALAPPDATA "Android"
+            $platformToolsDir = Join-Path $installDir "platform-tools"
+            $zipPath = Join-Path $env:TEMP "platform-tools.zip"
+            $url = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+            
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+            
+            if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
+            Expand-Archive -Path $zipPath -DestinationPath $installDir -Force
+            
+            $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+            if ($userPath -notmatch [regex]::Escape($platformToolsDir)) {
+                $newPath = $userPath + ";$platformToolsDir"
+                [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+                $env:PATH += ";$platformToolsDir"
+            }
+            
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+            $dlForm.Close()
+            $dlForm.Dispose()
+            [void][System.Windows.Forms.MessageBox]::Show("Android Platform Tools successfully installed! The application will now start.", "Installation Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        } catch {
+            $dlForm.Close()
+            $dlForm.Dispose()
+            [void][System.Windows.Forms.MessageBox]::Show("Failed to download or install ADB: $($_.Exception.Message)`n`nPlease install it manually and restart the application.", "Download Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            exit
+        }
+    } else {
+        exit
+    }
 }
 
-# Imports native Windows DWM and User32 APIs utilizing a unique class namespace to mitigate session collisions.
+# Import Windows APIs for custom dark mode title bar rendering.
 try {
     if (-not ("ChihafuyuDwmApi" -as [type])) {
         $dwmCode = @'
@@ -25,10 +74,10 @@ try {
         Add-Type -TypeDefinition $dwmCode -ErrorAction Stop
     }
 } catch {
-    Write-Debug "Failed to initialize DWM API. Custom dark title bar rendering is disabled."
+    Write-Debug "Failed to initialize DWM API. Custom dark title bar rendering will be disabled."
 }
 
-# Applies the immersive dark mode attribute to the target window's non-client area.
+# Force the window title bar to match the dark theme.
 function Set-TitleBarTheme($targetForm, [bool]$IsDark) {
     try {
         if ($null -ne $targetForm -and $targetForm.Handle -ne [System.IntPtr]::Zero) {
@@ -38,7 +87,6 @@ function Set-TitleBarTheme($targetForm, [bool]$IsDark) {
             [ChihafuyuDwmApi]::DwmSetWindowAttribute($handle, 20, [ref]$val, 4) | Out-Null
             [ChihafuyuDwmApi]::DwmSetWindowAttribute($handle, 19, [ref]$val, 4) | Out-Null
             
-            # Spoofs the focus state to force a synchronous repaint without resizing constraints.
             [ChihafuyuDwmApi]::SendMessage($handle, 0x0086, [IntPtr]0, [IntPtr]::Zero) | Out-Null
             [ChihafuyuDwmApi]::SendMessage($handle, 0x0086, [IntPtr]1, [IntPtr]::Zero) | Out-Null
         }
@@ -47,7 +95,7 @@ function Set-TitleBarTheme($targetForm, [bool]$IsDark) {
     }
 }
 
-# Enables hardware-accelerated double buffering on WinForms controls to prevent UI flickering.
+# Enable double buffering to prevent UI flickering during updates.
 function Enable-DoubleBuffer($control) {
     try {
         $prop = $control.GetType().GetProperty("DoubleBuffered", [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::NonPublic)
@@ -57,11 +105,11 @@ function Enable-DoubleBuffer($control) {
     }
 }
 
-# Defines script-scoped constant regex patterns for network device discovery.
+# Regex patterns for identifying Wi-Fi devices.
 $script:PATTERN_WIFI_DEVICE = "\._adb-tls-connect\._tcp"
 $script:PATTERN_IP_PORT = "\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b"
 
-# Global states for managing the modeless Logcat background processes.
+# Global variables for the Logcat viewer.
 $global:activeLogcatForm = $null
 $global:logcatProcess = $null
 $script:logFile = ""
@@ -69,7 +117,7 @@ $script:logStream = $null
 $script:logReader = $null
 $script:logTimer = $null
 
-# Centralizes and securely executes resource teardown for the Logcat viewer.
+# Clean up Logcat resources to prevent memory leaks and orphaned processes.
 function Invoke-LogcatCleanup {
     if ($null -ne $script:logTimer) { 
         $script:logTimer.Stop()
@@ -77,16 +125,16 @@ function Invoke-LogcatCleanup {
         $script:logTimer = $null
     }
     if ($null -ne $script:logReader) { 
-        try { $script:logReader.Dispose() } catch { Write-Debug "StreamReader disposal failed." }
+        try { $script:logReader.Dispose() } catch { }
         $script:logReader = $null 
     }
     if ($null -ne $script:logStream) { 
-        try { $script:logStream.Dispose() } catch { Write-Debug "FileStream disposal failed." }
+        try { $script:logStream.Dispose() } catch { }
         $script:logStream = $null 
     }
     if ($null -ne $global:logcatProcess -and -not $global:logcatProcess.HasExited) {
         Start-Process "taskkill.exe" -ArgumentList "/F /T /PID $($global:logcatProcess.Id)" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
-        try { $global:logcatProcess.Dispose() } catch { Write-Debug "Logcat process disposal failed." }
+        try { $global:logcatProcess.Dispose() } catch { }
         $global:logcatProcess = $null
     }
     
@@ -97,7 +145,7 @@ function Invoke-LogcatCleanup {
     }
 }
 
-# Initializes the primary application window context.
+# Main application setup.
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "APK Installer & Uninstaller" 
 $form.Size = New-Object System.Drawing.Size(520,640) 
@@ -113,13 +161,12 @@ $form.Add_HandleCreated({
 
 $menuStrip = New-Object System.Windows.Forms.MenuStrip
 
-# Constructs the File menu hierarchy.
+# Menu strip configuration.
 $menuFile = New-Object System.Windows.Forms.ToolStripMenuItem("File")
 $menuExit = New-Object System.Windows.Forms.ToolStripMenuItem("Exit")
 $menuExit.Add_Click({ $form.Close() })
 [void]$menuFile.DropDownItems.Add($menuExit)
 
-# Constructs the Settings menu and connection state toggles.
 $menuSettings = New-Object System.Windows.Forms.ToolStripMenuItem("Settings")
 $menuSource = New-Object System.Windows.Forms.ToolStripMenuItem("Source Connection")
 
@@ -129,11 +176,12 @@ $menuUsb.Checked = $true
 $menuWifi = New-Object System.Windows.Forms.ToolStripMenuItem("Wireless (Local Wi-Fi)")
 $menuWifi.Checked = $false
 
-# Invokes an external ADB binary command securely and captures standard I/O streams synchronously.
+# Run ADB commands and capture the output safely without leaving 0-byte temp files.
 function Run-AdbCommand($arguments) {
-    $tmpBat = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), ".bat")
-    $tmpOut = [System.IO.Path]::GetTempFileName()
-    $tmpErr = [System.IO.Path]::GetTempFileName()
+    $tempGuid = [Guid]::NewGuid().ToString("N")
+    $tmpBat = Join-Path ([System.IO.Path]::GetTempPath()) "adb_cmd_$tempGuid.bat"
+    $tmpOut = Join-Path ([System.IO.Path]::GetTempPath()) "adb_out_$tempGuid.txt"
+    $tmpErr = Join-Path ([System.IO.Path]::GetTempPath()) "adb_err_$tempGuid.txt"
     
     $resultOut = ""
     $resultErr = ""
@@ -165,7 +213,7 @@ function Run-AdbCommand($arguments) {
             try { 
                 if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
                 $proc.Dispose() 
-            } catch { Write-Debug "Command process disposal failed." }
+            } catch { }
         }
         if (Test-Path $tmpBat) { Remove-Item $tmpBat -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tmpOut) { Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue }
@@ -176,7 +224,7 @@ function Run-AdbCommand($arguments) {
     return $result.Trim()
 }
 
-# Evaluates the active ADB device list and extracts the target identifier based on the connection context.
+# Find the currently connected device based on the selected mode (USB or Wi-Fi).
 function Get-TargetDevice([bool]$IsWifiMode) {
     $devicesOut = Run-AdbCommand "devices"
     [string[]]$allLines = $devicesOut -split "`r?`n"
@@ -222,7 +270,7 @@ $menuWifi.Add_Click({
         $menuUsb.Checked = $false
         $menuWifi.Checked = $true
         Write-Log "Success: Auto-detected wireless device -> $targetDev"
-        [System.Windows.Forms.MessageBox]::Show("Wireless device automatically detected!`n`nDevice ID: $targetDev`n`nNo manual IP input is needed.", "mDNS Discovery Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [void][System.Windows.Forms.MessageBox]::Show("Wireless device automatically detected!`n`nDevice ID: $targetDev`n`nNo manual IP input is needed.", "mDNS Discovery Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     } else {
         Write-Log "Notice: Auto-discovery failed or delayed."
         Write-Log "Launching Manual IP Fallback dialog..."
@@ -289,7 +337,7 @@ $menuWifi.Add_Click({
         $wifiForm.Controls.AddRange(@($btnRetry, $btnPair, $btnOk))
         $wifiForm.AcceptButton = $btnOk
 
-        # Implements the Android 11+ secure pairing execution protocol.
+        # Display the pairing dialog for Android 11+ wireless debugging.
         $btnPair.Add_Click({
             $pairForm = New-Object System.Windows.Forms.Form
             $pairForm.Text = "Pair New Device"
@@ -361,7 +409,7 @@ $menuWifi.Add_Click({
                 $code = $txtPairCode.Text.Trim()
 
                 if ([string]::IsNullOrWhiteSpace($ip) -or [string]::IsNullOrWhiteSpace($code)) {
-                    [System.Windows.Forms.MessageBox]::Show("Please enter both the IP:Port and the pairing code.", "Input Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    [void][System.Windows.Forms.MessageBox]::Show("Please enter both the IP:Port and the pairing code.", "Input Required", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                     return
                 }
 
@@ -376,10 +424,10 @@ $menuWifi.Add_Click({
                 $btnExecutePair.Enabled = $true
 
                 if ($pairResult -match "Successfully paired") {
-                    [System.Windows.Forms.MessageBox]::Show("Device paired successfully!`n`nYou can now close this window and enter the Connection IP:Port in the main dialog to connect.", "Pairing Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    [void][System.Windows.Forms.MessageBox]::Show("Device paired successfully!`n`nYou can now close this window and enter the Connection IP:Port in the main dialog to connect.", "Pairing Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                     $pairForm.Close()
                 } else {
-                    [System.Windows.Forms.MessageBox]::Show("Pairing failed. Please verify the IP, Port, and Code are correct and the device is on the same network.`n`nADB Output:`n$pairResult", "Pairing Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    [void][System.Windows.Forms.MessageBox]::Show("Pairing failed. Please verify the IP, Port, and Code are correct and the device is on the same network.`n`nADB Output:`n$pairResult", "Pairing Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
                 }
             })
 
@@ -410,7 +458,7 @@ $menuWifi.Add_Click({
                 $menuUsb.Checked = $false
                 $menuWifi.Checked = $true
                 Write-Log "Success: Auto-detected wireless device on retry -> $retryDev"
-                [System.Windows.Forms.MessageBox]::Show("Device successfully detected on retry!`n`nDevice ID: $retryDev", "Discovery Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                [void][System.Windows.Forms.MessageBox]::Show("Device successfully detected on retry!`n`nDevice ID: $retryDev", "Discovery Successful", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                 
                 $wifiForm.DialogResult = [System.Windows.Forms.DialogResult]::Ignore
                 $wifiForm.Close()
@@ -420,7 +468,7 @@ $menuWifi.Add_Click({
                 $btnPair.Enabled = $true
                 $btnOk.Enabled = $true
                 $txtWifi.Enabled = $true
-                [System.Windows.Forms.MessageBox]::Show("Still cannot find the device automatically.`n`nPlease ensure your Android device and PC are on the same network and Wireless Debugging is currently active.", "Retry Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                [void][System.Windows.Forms.MessageBox]::Show("Still cannot find the device automatically.`n`nPlease ensure your Android device and PC are on the same network and Wireless Debugging is currently active.", "Retry Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
             }
         })
 
@@ -439,7 +487,7 @@ $menuWifi.Add_Click({
                         $menuWifi.Checked = $true
                         Write-Log "Success: Switched to Wireless mode manually."
                     } else {
-                        [System.Windows.Forms.MessageBox]::Show("Failed to connect to $ipAddress. Please check your network and ensure Wireless Debugging is active.`n`nIf this is a new device, click 'Pair Device' first.", "Connection Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        [void][System.Windows.Forms.MessageBox]::Show("Failed to connect to $ipAddress. Please check your network and ensure Wireless Debugging is active.`n`nIf this is a new device, click 'Pair Device' first.", "Connection Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                     }
                 }
             }
@@ -454,13 +502,13 @@ $menuWifi.Add_Click({
 [void]$menuSource.DropDownItems.Add($menuWifi)
 [void]$menuSettings.DropDownItems.Add($menuSource)
 
-# Constructs the Tools menu suite.
+# Tools menu.
 $menuTools = New-Object System.Windows.Forms.ToolStripMenuItem("Tools")
 $menuLogcat = New-Object System.Windows.Forms.ToolStripMenuItem("Capture Logcat")
 
 $menuLogcat.Add_Click({
 
-    # Enforces a singleton pattern to prevent concurrent Logcat instances.
+    # Ensure only one Logcat window is open at a time.
     if ($null -ne $global:activeLogcatForm -and -not $global:activeLogcatForm.IsDisposed) {
         if ($global:activeLogcatForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
             $global:activeLogcatForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
@@ -475,11 +523,11 @@ $menuLogcat.Add_Click({
 
     if ([string]::IsNullOrEmpty($targetDev)) {
         $modeStr = if ($menuWifi.Checked) { "Wireless" } else { "USB Cable" }
-        [System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please connect your device or switch modes in the Settings menu.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        [void][System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please connect your device or switch modes in the Settings menu.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
     
-    # Persists the device ID in the script scope to prevent garbage collection during capture.
+    # Lock in the device ID so it remains consistent while reading logs.
     $script:targetDevLocked = $targetDev
 
     $global:activeLogcatForm = New-Object System.Windows.Forms.Form
@@ -493,7 +541,7 @@ $menuLogcat.Add_Click({
         Set-TitleBarTheme $global:activeLogcatForm $chkDarkMode.Checked
     })
 
-    # Instantiates scope-modified UI controls for modeless execution constraints.
+    # Initialize UI elements for the Logcat window.
     $script:cmbLevel = New-Object System.Windows.Forms.ComboBox
     $script:cmbLevel.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     $script:cmbLevel.Items.AddRange(@("Verbose (*:V)", "Debug (*:D)", "Info (*:I)", "Warning (*:W)", "Error (*:E)", "Fatal (*:F)"))
@@ -558,9 +606,8 @@ $menuLogcat.Add_Click({
 
     $global:activeLogcatForm.Controls.AddRange(@($script:cmbLevel, $script:chkCrash, $script:btnStartLogcat, $script:btnStopLogcat, $script:btnClearLogcat, $script:btnExportLogcat, $script:rtbLogs))
 
-    # Event: Initializes the asynchronous ADB process and file stream handler.
     $script:btnStartLogcat.Add_Click({
-        # Implements strict re-entrancy protection to prevent concurrent logging execution loops.
+        # Lock the buttons immediately to prevent concurrent execution and app crashes.
         $script:btnStartLogcat.Enabled = $false
         $script:cmbLevel.Enabled = $false
         $script:chkCrash.Enabled = $false
@@ -594,7 +641,7 @@ $menuLogcat.Add_Click({
 
         Invoke-LogcatCleanup
 
-        $tempGuid = [Guid]::NewGuid().ToString().Substring(0,8)
+        $tempGuid = [Guid]::NewGuid().ToString("N").Substring(0,8)
         $script:logFile = Join-Path ([System.IO.Path]::GetTempPath()) "adb_logcat_proxy_$tempGuid.log"
 
         try {
@@ -625,7 +672,7 @@ $menuLogcat.Add_Click({
                         }
 
                         if ($newLogs.Length -gt 0) {
-                            # Buffer management prevents System.OutOfMemoryException during heavy event tracing.
+                            # Limit the log text length to prevent OutOfMemory exceptions.
                             if ($script:rtbLogs.TextLength -gt 500000) {
                                 $script:rtbLogs.Clear()
                                 $script:rtbLogs.AppendText("--- BUFFER CLEARED TO PREVENT MEMORY OVERLOAD ---`n")
@@ -654,7 +701,6 @@ $menuLogcat.Add_Click({
         }
     })
 
-    # Event: Halts the UI timer and safely terminates the background process.
     $script:btnStopLogcat.Add_Click({
         Invoke-LogcatCleanup
         
@@ -675,7 +721,7 @@ $menuLogcat.Add_Click({
 
     $script:btnExportLogcat.Add_Click({
         if ([string]::IsNullOrWhiteSpace($script:rtbLogs.Text)) {
-            [System.Windows.Forms.MessageBox]::Show("The logcat buffer is empty.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            [void][System.Windows.Forms.MessageBox]::Show("The logcat buffer is empty.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             return
         }
 
@@ -685,12 +731,12 @@ $menuLogcat.Add_Click({
         
         if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             Set-Content -Path $sfd.FileName -Value $script:rtbLogs.Text -Encoding UTF8 -ErrorAction SilentlyContinue
-            [System.Windows.Forms.MessageBox]::Show("Logcat saved successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            [void][System.Windows.Forms.MessageBox]::Show("Logcat saved successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         }
         $sfd.Dispose()
     })
 
-    # Executes strict cleanup procedures upon form close to eliminate ghost instances.
+    # Ensure proper cleanup when the user closes the Logcat window.
     $global:activeLogcatForm.Add_FormClosing({
         Invoke-LogcatCleanup
     })
@@ -705,7 +751,7 @@ $menuLogcat.Add_Click({
 
 [void]$menuTools.DropDownItems.Add($menuLogcat)
 
-# Constructs the Help menu.
+# Help menu configuration.
 $menuHelp = New-Object System.Windows.Forms.ToolStripMenuItem("Help")
 $menuAbout = New-Object System.Windows.Forms.ToolStripMenuItem("About")
 
@@ -830,7 +876,6 @@ $radAurora.Location = New-Object System.Drawing.Point(90,20)
 $radAurora.AutoSize = $true
 $grpSource.Controls.Add($radAurora)
 
-# Configures spatial coordinates for the F-Droid Basic radio control.
 $radFdroid = New-Object System.Windows.Forms.RadioButton
 $radFdroid.Text = "F-Droid Basic"
 $radFdroid.Location = New-Object System.Drawing.Point(180,20)
@@ -843,7 +888,7 @@ $radCustom.Location = New-Object System.Drawing.Point(275,20)
 $radCustom.AutoSize = $true
 $grpSource.Controls.Add($radCustom)
 
-# Constructs configuration directory for local profile persistence.
+# Set up a directory in AppData to save the user's custom fake installer name.
 $processName = [System.Diagnostics.Process]::GetCurrentProcess().ProcessName
 $cfgFolder = Join-Path $env:APPDATA $processName
 
@@ -859,7 +904,6 @@ $txtCustomSource.Size = New-Object System.Drawing.Size(100,20)
 $txtCustomSource.Enabled = $false 
 $txtCustomSource.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 
-# Restores user-defined custom source input state if profile exists.
 if (Test-Path $cfgPath) {
     $savedSource = Get-Content -Path $cfgPath | Select-Object -First 1
     if ($null -ne $savedSource) {
@@ -926,7 +970,6 @@ $tlpBottomButtons.Controls.Add($btnUninstall, 1, 0)
 
 $script:apkMap = @{}
 
-# Applies the color theme across all rendered UI elements synchronously.
 function Apply-Theme([bool]$IsDark) {
     
     $form.SuspendLayout()
@@ -1007,7 +1050,6 @@ function Apply-Theme([bool]$IsDark) {
 
     $form.ResumeLayout($true)
 
-    # Re-evaluates theme parameters for the active Logcat Viewer context.
     if ($null -ne $global:activeLogcatForm -and -not $global:activeLogcatForm.IsDisposed) {
         
         $global:activeLogcatForm.SuspendLayout()
@@ -1054,7 +1096,6 @@ function Apply-Theme([bool]$IsDark) {
     }
 }
 
-# Enumerates and loads valid application files from the execution directory.
 function Load-ApkList {
     $list.Items.Clear()
     $script:apkMap.Clear()
@@ -1071,7 +1112,6 @@ function Load-ApkList {
 
 Load-ApkList
 
-# Appends formatted text to the user-facing log console synchronously with memory protection.
 function Write-Log($text) {
     if ($text -ne $null -and $text.Trim() -ne "") {
         if ($log.TextLength -gt 100000) {
@@ -1121,7 +1161,7 @@ $btnRefresh.Add_Click({ Load-ApkList })
 
 $btnRemove.Add_Click({
     if ($list.CheckedIndices.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("Please check (tick) the APK(s) from the list first to remove.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [void][System.Windows.Forms.MessageBox]::Show("Please check (tick) the APK(s) from the list first to remove.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
     }
     
@@ -1139,7 +1179,7 @@ $btnClearLog.Add_Click({
 
 $btnExportLog.Add_Click({
     if ([string]::IsNullOrWhiteSpace($log.Text)) {
-        [System.Windows.Forms.MessageBox]::Show("The log is currently empty. Nothing to export.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [void][System.Windows.Forms.MessageBox]::Show("The log is currently empty. Nothing to export.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
     }
 
@@ -1151,7 +1191,7 @@ $btnExportLog.Add_Click({
     try {
         if ($saveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             Set-Content -Path $saveFileDialog.FileName -Value $log.Text -Encoding UTF8 -ErrorAction SilentlyContinue
-            [System.Windows.Forms.MessageBox]::Show("Log successfully exported!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            [void][System.Windows.Forms.MessageBox]::Show("Log successfully exported!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         }
     }
     finally {
@@ -1225,7 +1265,7 @@ $menuAbout.Add_Click({
     }
     
     $aboutLabel.Add_LinkClicked({
-        Start-Process "https://opensource.org/license/mit"
+        Start-Process "https://opensource.org/licenses/mit"
     })
     $aboutForm.Controls.Add($aboutLabel)
 
@@ -1251,7 +1291,7 @@ $menuAbout.Add_Click({
 $btnUninstall.Add_Click({
     $inputForm = New-Object System.Windows.Forms.Form
     $inputForm.Text = "Uninstall App"
-    # Enforces strictly locked dialog bounds to maintain proportional interface rendering.
+    # Keep the uninstall window bounds fixed to prevent layout issues when maximizing.
     $inputForm.Size = New-Object System.Drawing.Size(460, 295)
     $inputForm.StartPosition = "CenterParent"
     $inputForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -1358,7 +1398,6 @@ $btnUninstall.Add_Click({
     }
     
     $btnExportPkgs.Add_Click({
-        # Implements strict re-entrancy protection to prevent concurrent execution conflicts.
         $btnExportPkgs.Enabled = $false
         $btnOk.Enabled = $false
         $txtPkg.Enabled = $false
@@ -1368,7 +1407,7 @@ $btnUninstall.Add_Click({
             $targetDev = Get-TargetDevice $menuWifi.Checked
             if ([string]::IsNullOrEmpty($targetDev)) {
                 $modeStr = if ($menuWifi.Checked) { "Wireless" } else { "USB Cable" }
-                [System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please connect your device to export the package list.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                [void][System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please connect your device to export the package list.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                 return
             }
 
@@ -1380,7 +1419,7 @@ $btnUninstall.Add_Click({
             if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                 $inputForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
                 
-                # Processes raw ADB package lists into unique, sorted arrays.
+                # Parse the raw ADB output into a clean, sorted list.
                 function Parse-PackageList($rawOutput) {
                     return @($rawOutput -split "`r?`n" | Where-Object { $_ -match "^package:" } | ForEach-Object { $_.Replace("package:","").Trim() } | Sort-Object -Unique)
                 }
@@ -1430,7 +1469,7 @@ $btnUninstall.Add_Click({
                 Set-Content -Path $sfd.FileName -Value $outStr.ToString() -Encoding UTF8 -Force -ErrorAction SilentlyContinue
                 
                 $inputForm.Cursor = [System.Windows.Forms.Cursors]::Default
-                [System.Windows.Forms.MessageBox]::Show("Detailed package list exported successfully!`n`nYou can open the text file to browse categories, copy the desired package name, and paste it into the uninstall field.", "Export Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                [void][System.Windows.Forms.MessageBox]::Show("Detailed package list exported successfully!`n`nYou can open the text file to browse categories, copy the desired package name, and paste it into the uninstall field.", "Export Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             }
             $sfd.Dispose()
         } finally {
@@ -1444,7 +1483,7 @@ $btnUninstall.Add_Click({
     
     $inputForm.AcceptButton = $btnOk
 
-    # Dynamically scales the dialog width if the parent application window is heavily expanded.
+    # Expand the dialog width if the main window is maximized or resized.
     if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Maximized -or $form.Width -gt 700) {
         $inputForm.Width = 650
     }
@@ -1454,9 +1493,8 @@ $btnUninstall.Add_Click({
             $pkgName = $txtPkg.Text.Trim()
             if (-not [string]::IsNullOrWhiteSpace($pkgName)) {
                 
-                # Validates the package name format to prevent shell injection vulnerabilities.
                 if ($pkgName -notmatch '^[a-zA-Z0-9\._\-]+$') {
-                    [System.Windows.Forms.MessageBox]::Show("Invalid package name format. Only alphanumeric characters, dots, underscores, and dashes are allowed.", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    [void][System.Windows.Forms.MessageBox]::Show("Invalid package name format. Only alphanumeric characters, dots, underscores, and dashes are allowed.", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                     return
                 }
 
@@ -1472,7 +1510,7 @@ $btnUninstall.Add_Click({
                 if ([string]::IsNullOrEmpty($targetDev)) {
                     $modeStr = if ($menuWifi.Checked) { "Wireless" } else { "USB Cable" }
                     Write-Log "Error: No active $modeStr device found."
-                    [System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please check your connection or switch the Source Connection in the Settings menu.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    [void][System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please check your connection or switch the Source Connection in the Settings menu.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                     
                     $btnInstall.Enabled = $true
                     $btnUninstall.Enabled = $true
@@ -1521,7 +1559,7 @@ $btnUninstall.Add_Click({
 $btnInstall.Add_Click({
 
     if ($list.CheckedItems.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("No APK selected.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [void][System.Windows.Forms.MessageBox]::Show("No APK selected.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
     }
 
@@ -1532,7 +1570,7 @@ $btnInstall.Add_Click({
         $installerSource = "org.fdroid.basic"
     } elseif ($radCustom.Checked) {
         if ([string]::IsNullOrWhiteSpace($txtCustomSource.Text)) {
-            [System.Windows.Forms.MessageBox]::Show("Please enter a custom installer package name.", "Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            [void][System.Windows.Forms.MessageBox]::Show("Please enter a custom installer package name.", "Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
             return
         }
         $installerSource = $txtCustomSource.Text.Trim()
@@ -1553,7 +1591,7 @@ $btnInstall.Add_Click({
     $grpSource.Enabled = $false
     $progress.Value = 0
 
-    # Implements strict drag-and-drop locking during active installations to prevent enumerator modification exceptions.
+    # Lock drag-and-drop during installation to prevent list modification exceptions.
     $list.AllowDrop = $false
 
     try {
@@ -1565,7 +1603,7 @@ $btnInstall.Add_Click({
         if ([string]::IsNullOrEmpty($targetDev)) {
             $modeStr = if ($menuWifi.Checked) { "Wireless" } else { "USB Cable" }
             Write-Log "Error: No active $modeStr device found."
-            [System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please check your connection or switch the Source Connection in the Settings menu.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            [void][System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please check your connection or switch the Source Connection in the Settings menu.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
             
             $btnInstall.Enabled = $true
             $btnUninstall.Enabled = $true
@@ -1586,7 +1624,7 @@ $btnInstall.Add_Click({
         
         Write-Log "Target device: $targetDev"
 
-        # Captures an immutable snapshot of the execution queue to isolate the loop from real-time UI modifications.
+        # Create a snapshot of the checked items to avoid errors if the UI changes during the loop.
         $snapshotItems = @($list.CheckedItems)
 
         foreach ($itemText in $snapshotItems) {
@@ -1623,13 +1661,11 @@ $btnInstall.Add_Click({
             
             $progress.Value = 100
             
-            # Pauses execution to allow the Android package manager to commit installation transactions securely.
             for ($w = 0; $w -lt 15; $w++) {
                 [System.Windows.Forms.Application]::DoEvents()
                 Start-Sleep -Milliseconds 50
             }
             
-            # Precisely deletes the exact proxy file to avoid wildcards race conditions.
             Run-AdbCommand "-s `"$targetDev`" shell rm `"/data/local/tmp/$safeName`"" | Out-Null
         }
 
@@ -1640,7 +1676,7 @@ $btnInstall.Add_Click({
     }
     catch {
         Write-Log "Exception: $_"
-        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
     finally {
         Write-Log "Cleaning up temporary files..."
@@ -1678,6 +1714,5 @@ $form.Add_FormClosing({
 
 [void]$form.ShowDialog()
 
-# Ensures terminal background processes are terminated prior to application exit.
 Start-Process -FilePath "adb.exe" -ArgumentList "kill-server" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
 $form.Dispose()

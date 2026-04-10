@@ -6,7 +6,7 @@
 
 A lightweight, portable Windows GUI utility built in PowerShell to easily manage Android applications (APKs) via Android Debug Bridge (ADB). 
 
-This tool gives you a clean graphical interface for common ADB operations such as wireless debugging, logcat monitoring, batch installations, and system app debloating without the hassle of manual command-line inputs.
+This tool gives you a clean graphical interface for common ADB operations—like wireless debugging, logcat monitoring, batch installations, and system app debloating—without the hassle of typing manual command-line inputs.
 
 ## 📸 Screenshots
 
@@ -39,10 +39,10 @@ This tool gives you a clean graphical interface for common ADB operations such a
 
 ## 🚀 Download & Run
 
-You do not need to install PowerShell development tools to use this application.
+You do not need to install any PowerShell development tools to use this application.
 
 1. Download the latest `.exe` binary from the **[Releases Page](https://github.com/chihafuyu/APK-Installer-Uninstaller/releases)**.
-2. Ensure `adb.exe` is in your system PATH or located in the same directory as the executable. You can get it from the **[Android Platform Tools website](https://developer.android.com/tools/releases/platform-tools)**.
+2. Ensure `adb.exe` is in your system PATH. If you don't have it installed, don't worry—the tool will automatically download and configure it for you!
 3. Enable **USB Debugging** or **Wireless Debugging** on your Android device and connect it to your PC.
 4. Run the executable.
 
@@ -53,8 +53,11 @@ You do not need to install PowerShell development tools to use this application.
 If you prefer to compile the executable yourself:
 
 ### Prerequisites
-* Windows OS with Windows PowerShell 5.1 or later.
-* **[PS2EXE](https://github.com/MScholtes/PS2EXE)** module installed.
+1. Windows OS with Windows PowerShell 5.1 or later.
+2. The **[PS2EXE](https://github.com/MScholtes/PS2EXE)** module. If you don't have it installed, simply open PowerShell as Administrator and run this one-line command:
+
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; Install-Module ps2exe -Scope CurrentUser -Force
 
 ### Compilation Steps
 
@@ -62,22 +65,18 @@ If you prefer to compile the executable yourself:
    ```cmd
    git clone https://github.com/chihafuyu/APK-Installer-Uninstaller.git
    ```
-2. Open PowerShell as Administrator and install the `ps2exe` module if you haven't already:
-   ```powershell
-   Install-Module ps2exe -Force
-   ```  
-3. Navigate to the directory containing the cloned script:
+2. Navigate to the directory containing the cloned script:
    ```powershell
    cd .\path\to\cloned\repo
    ```
-4. Run the compilation command. The `-noConsole` flag is strictly required to hide the background terminal window and prevent stray output boxes:
+3. Run the compilation command. The `-noConsole` flag is strictly required to hide the background terminal window and prevent stray output boxes:
    ```powershell
    Invoke-PS2EXE .\APK-Installer-Uninstaller.ps1 .\ADB-APK-Installer.exe -noConsole -title "APK Installer & Uninstaller" -version "1.0.0.0"
    ```
    
    _(Optional: You can add a custom icon by appending `-icon .\logo.ico` to the command above)._
    
-5. The compiled `.exe` binary will be generated in the same directory.
+4. The compiled `.exe` binary will be generated in the same directory.
    
 ## 📝 License
 
