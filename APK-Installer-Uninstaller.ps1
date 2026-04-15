@@ -116,6 +116,7 @@ $script:logFile = ""
 $script:logStream = $null
 $script:logReader = $null
 $script:logTimer = $null
+$script:searchDebounceTimer = $null
 
 # Clean up Logcat resources to prevent memory leaks and orphaned processes.
 function Invoke-LogcatCleanup {
@@ -541,39 +542,52 @@ $menuLogcat.Add_Click({
         Set-TitleBarTheme $global:activeLogcatForm $chkDarkMode.Checked
     })
 
-    # Initialize UI elements for the Logcat window.
+    # Adjust layout coordinates and set manual height for the Search box for perfect alignment.
     $script:cmbLevel = New-Object System.Windows.Forms.ComboBox
     $script:cmbLevel.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     $script:cmbLevel.Items.AddRange(@("Verbose (*:V)", "Debug (*:D)", "Info (*:I)", "Warning (*:W)", "Error (*:E)", "Fatal (*:F)"))
     $script:cmbLevel.SelectedIndex = 0
     $script:cmbLevel.Location = New-Object System.Drawing.Point(10, 15)
-    $script:cmbLevel.Size = New-Object System.Drawing.Size(120, 25)
+    $script:cmbLevel.Size = New-Object System.Drawing.Size(110, 25)
 
     $script:chkCrash = New-Object System.Windows.Forms.CheckBox
     $script:chkCrash.Text = "Detect App Crashes Only (AndroidRuntime)"
     $script:chkCrash.AutoSize = $true
-    $script:chkCrash.Location = New-Object System.Drawing.Point(140, 18)
+    $script:chkCrash.Location = New-Object System.Drawing.Point(125, 18)
+
+    $script:lblSearch = New-Object System.Windows.Forms.Label
+    $script:lblSearch.Text = "Search:"
+    $script:lblSearch.AutoSize = $true
+    $script:lblSearch.Location = New-Object System.Drawing.Point(375, 20)
+
+    $script:txtSearchLog = New-Object System.Windows.Forms.TextBox
+    $script:txtSearchLog.AutoSize = $false # Disable auto-size to force a 25px height.
+    $script:txtSearchLog.Location = New-Object System.Drawing.Point(425, 15)
+    $script:txtSearchLog.Size = New-Object System.Drawing.Size(105, 25)
+    
+    $script:ttSearch = New-Object System.Windows.Forms.ToolTip
+    $script:ttSearch.SetToolTip($script:txtSearchLog, "Type to search and highlight keywords in the log")
 
     $script:btnStartLogcat = New-Object System.Windows.Forms.Button
     $script:btnStartLogcat.Text = "Start Capture"
-    $script:btnStartLogcat.Location = New-Object System.Drawing.Point(490, 15)
-    $script:btnStartLogcat.Size = New-Object System.Drawing.Size(95, 25)
+    $script:btnStartLogcat.Location = New-Object System.Drawing.Point(540, 15)
+    $script:btnStartLogcat.Size = New-Object System.Drawing.Size(85, 25)
 
     $script:btnStopLogcat = New-Object System.Windows.Forms.Button
     $script:btnStopLogcat.Text = "Stop"
-    $script:btnStopLogcat.Location = New-Object System.Drawing.Point(595, 15)
+    $script:btnStopLogcat.Location = New-Object System.Drawing.Point(630, 15)
     $script:btnStopLogcat.Size = New-Object System.Drawing.Size(60, 25)
     $script:btnStopLogcat.Enabled = $false
 
     $script:btnClearLogcat = New-Object System.Windows.Forms.Button
     $script:btnClearLogcat.Text = "Clear"
-    $script:btnClearLogcat.Location = New-Object System.Drawing.Point(665, 15)
-    $script:btnClearLogcat.Size = New-Object System.Drawing.Size(60, 25)
+    $script:btnClearLogcat.Location = New-Object System.Drawing.Point(695, 15)
+    $script:btnClearLogcat.Size = New-Object System.Drawing.Size(55, 25)
 
     $script:btnExportLogcat = New-Object System.Windows.Forms.Button
     $script:btnExportLogcat.Text = "Export Logcat"
-    $script:btnExportLogcat.Location = New-Object System.Drawing.Point(735, 15)
-    $script:btnExportLogcat.Size = New-Object System.Drawing.Size(110, 25)
+    $script:btnExportLogcat.Location = New-Object System.Drawing.Point(755, 15)
+    $script:btnExportLogcat.Size = New-Object System.Drawing.Size(95, 25)
 
     $script:rtbLogs = New-Object System.Windows.Forms.RichTextBox
     $script:rtbLogs.Location = New-Object System.Drawing.Point(10, 50)
@@ -588,6 +602,10 @@ $menuLogcat.Add_Click({
         $global:activeLogcatForm.BackColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
         $global:activeLogcatForm.ForeColor = [System.Drawing.Color]::White
         $script:chkCrash.ForeColor = [System.Drawing.Color]::White
+        $script:lblSearch.ForeColor = [System.Drawing.Color]::White
+        
+        $script:txtSearchLog.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
+        $script:txtSearchLog.ForeColor = [System.Drawing.Color]::White
         
         $script:rtbLogs.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
         $script:rtbLogs.ForeColor = [System.Drawing.Color]::LightGray
@@ -602,15 +620,79 @@ $menuLogcat.Add_Click({
             $btn.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
             $btn.ForeColor = [System.Drawing.Color]::White
         }
+    } else {
+        $script:lblSearch.ForeColor = [System.Drawing.SystemColors]::ControlText
     }
 
-    $global:activeLogcatForm.Controls.AddRange(@($script:cmbLevel, $script:chkCrash, $script:btnStartLogcat, $script:btnStopLogcat, $script:btnClearLogcat, $script:btnExportLogcat, $script:rtbLogs))
+    $global:activeLogcatForm.Controls.AddRange(@($script:cmbLevel, $script:chkCrash, $script:lblSearch, $script:txtSearchLog, $script:btnStartLogcat, $script:btnStopLogcat, $script:btnClearLogcat, $script:btnExportLogcat, $script:rtbLogs))
+
+    # Create a debounce timer to prevent the app from freezing while the user is typing.
+    $script:searchDebounceTimer = New-Object System.Windows.Forms.Timer
+    $script:searchDebounceTimer.Interval = 600
+    
+    $script:searchDebounceTimer.Add_Tick({
+        $script:searchDebounceTimer.Stop()
+        $keyword = $script:txtSearchLog.Text
+        
+        $script:rtbLogs.SuspendLayout()
+        $savedStart = $script:rtbLogs.SelectionStart
+        $savedLength = $script:rtbLogs.SelectionLength
+        
+        # Clear existing highlights quickly
+        $script:rtbLogs.SelectAll()
+        if ($chkDarkMode.Checked) {
+            $script:rtbLogs.SelectionBackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
+            $script:rtbLogs.SelectionColor = [System.Drawing.Color]::LightGray
+        } else {
+            $script:rtbLogs.SelectionBackColor = [System.Drawing.SystemColors]::Window
+            $script:rtbLogs.SelectionColor = [System.Drawing.SystemColors]::WindowText
+        }
+        
+        if (-not [string]::IsNullOrWhiteSpace($keyword)) {
+            $idx = 0
+            $matchCount = 0
+            # Limit highlight processing to 1000 items to guarantee the UI never freezes on massive log buffers.
+            while ($idx -lt $script:rtbLogs.TextLength -and $matchCount -lt 1000) {
+                $found = $script:rtbLogs.Find($keyword, $idx, [System.Windows.Forms.RichTextBoxFinds]::None)
+                if ($found -ne -1) {
+                    $script:rtbLogs.SelectionStart = $found
+                    $script:rtbLogs.SelectionLength = $keyword.Length
+                    
+                    if ($chkDarkMode.Checked) {
+                        $script:rtbLogs.SelectionBackColor = [System.Drawing.Color]::DodgerBlue
+                        $script:rtbLogs.SelectionColor = [System.Drawing.Color]::White
+                    } else {
+                        $script:rtbLogs.SelectionBackColor = [System.Drawing.Color]::Yellow
+                        $script:rtbLogs.SelectionColor = [System.Drawing.Color]::Black
+                    }
+                    
+                    $idx = $found + $keyword.Length
+                    $matchCount++
+                } else {
+                    break
+                }
+            }
+        }
+        
+        $script:rtbLogs.SelectionStart = $savedStart
+        $script:rtbLogs.SelectionLength = $savedLength
+        $script:rtbLogs.ResumeLayout()
+    })
+
+    # Reset the timer on every keystroke. Search only begins when the user stops typing.
+    $script:txtSearchLog.Add_TextChanged({
+        if ($null -ne $script:searchDebounceTimer) {
+            $script:searchDebounceTimer.Stop()
+            $script:searchDebounceTimer.Start()
+        }
+    })
 
     $script:btnStartLogcat.Add_Click({
         # Lock the buttons immediately to prevent concurrent execution and app crashes.
         $script:btnStartLogcat.Enabled = $false
         $script:cmbLevel.Enabled = $false
         $script:chkCrash.Enabled = $false
+        $script:txtSearchLog.Enabled = $false
 
         $script:rtbLogs.Clear()
         $script:rtbLogs.AppendText("Initializing ADB Logcat stream...`n")
@@ -678,26 +760,58 @@ $menuLogcat.Add_Click({
                                 $script:rtbLogs.AppendText("--- BUFFER CLEARED TO PREVENT MEMORY OVERLOAD ---`n")
                             }
                             
+                            $script:rtbLogs.SuspendLayout()
+                            $startIndex = $script:rtbLogs.TextLength
                             $script:rtbLogs.AppendText($newLogs.ToString())
+                            
+                            # Scans only the newly appended text to apply active highlights efficiently.
+                            $keyword = $script:txtSearchLog.Text
+                            if (-not [string]::IsNullOrWhiteSpace($keyword)) {
+                                $idx = $startIndex
+                                $matchCount = 0
+                                while ($idx -lt $script:rtbLogs.TextLength -and $matchCount -lt 50) {
+                                    $found = $script:rtbLogs.Find($keyword, $idx, [System.Windows.Forms.RichTextBoxFinds]::None)
+                                    if ($found -ne -1) {
+                                        $script:rtbLogs.SelectionStart = $found
+                                        $script:rtbLogs.SelectionLength = $keyword.Length
+                                        if ($chkDarkMode.Checked) {
+                                            $script:rtbLogs.SelectionBackColor = [System.Drawing.Color]::DodgerBlue
+                                            $script:rtbLogs.SelectionColor = [System.Drawing.Color]::White
+                                        } else {
+                                            $script:rtbLogs.SelectionBackColor = [System.Drawing.Color]::Yellow
+                                            $script:rtbLogs.SelectionColor = [System.Drawing.Color]::Black
+                                        }
+                                        $idx = $found + $keyword.Length
+                                        $matchCount++
+                                    } else {
+                                        break
+                                    }
+                                }
+                            }
+                            
                             $script:rtbLogs.SelectionStart = $script:rtbLogs.Text.Length
                             $script:rtbLogs.ScrollToCaret()
+                            $script:rtbLogs.ResumeLayout()
                         }
                     }
                 })
 
                 $script:logTimer.Start()
                 $script:btnStopLogcat.Enabled = $true
+                $script:txtSearchLog.Enabled = $true
             } else {
                 $script:rtbLogs.AppendText("`nError: Failed to locate proxy file stream.")
                 $script:btnStartLogcat.Enabled = $true
                 $script:cmbLevel.Enabled = $true
                 $script:chkCrash.Enabled = $true
+                $script:txtSearchLog.Enabled = $true
             }
         } catch {
             $script:rtbLogs.AppendText("`nError starting adb process: $_")
             $script:btnStartLogcat.Enabled = $true
             $script:cmbLevel.Enabled = $true
             $script:chkCrash.Enabled = $true
+            $script:txtSearchLog.Enabled = $true
         }
     })
 
@@ -726,7 +840,7 @@ $menuLogcat.Add_Click({
         }
 
         $sfd = New-Object System.Windows.Forms.SaveFileDialog
-        $sfd.FileName = "crash_logcat_$([DateTime]::Now.ToString('yyyyMMdd_HHmmss')).txt"
+        $sfd.FileName = "logcat_$([DateTime]::Now.ToString('yyyyMMdd_HHmmss')).txt"
         $sfd.Filter = "Text Files (*.txt)|*.txt|Log Files (*.log)|*.log|All Files (*.*)|*.*"
         
         if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
@@ -742,6 +856,11 @@ $menuLogcat.Add_Click({
     })
 
     $global:activeLogcatForm.Add_FormClosed({
+        if ($null -ne $script:searchDebounceTimer) {
+            $script:searchDebounceTimer.Stop()
+            $script:searchDebounceTimer.Dispose()
+            $script:searchDebounceTimer = $null
+        }
         $global:activeLogcatForm.Dispose()
         $global:activeLogcatForm = $null
     })
@@ -876,6 +995,7 @@ $radAurora.Location = New-Object System.Drawing.Point(90,20)
 $radAurora.AutoSize = $true
 $grpSource.Controls.Add($radAurora)
 
+# Configures spatial coordinates for the F-Droid Basic radio control.
 $radFdroid = New-Object System.Windows.Forms.RadioButton
 $radFdroid.Text = "F-Droid Basic"
 $radFdroid.Location = New-Object System.Drawing.Point(180,20)
@@ -1059,6 +1179,10 @@ function Apply-Theme([bool]$IsDark) {
             $global:activeLogcatForm.BackColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
             $global:activeLogcatForm.ForeColor = [System.Drawing.Color]::White
             $script:chkCrash.ForeColor = [System.Drawing.Color]::White
+            $script:lblSearch.ForeColor = [System.Drawing.Color]::White
+            
+            $script:txtSearchLog.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
+            $script:txtSearchLog.ForeColor = [System.Drawing.Color]::White
             
             $script:rtbLogs.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
             $script:rtbLogs.ForeColor = [System.Drawing.Color]::LightGray
@@ -1077,6 +1201,10 @@ function Apply-Theme([bool]$IsDark) {
             $global:activeLogcatForm.BackColor = [System.Drawing.SystemColors]::Control
             $global:activeLogcatForm.ForeColor = [System.Drawing.SystemColors]::ControlText
             $script:chkCrash.ForeColor = [System.Drawing.SystemColors]::ControlText
+            $script:lblSearch.ForeColor = [System.Drawing.SystemColors]::ControlText
+            
+            $script:txtSearchLog.BackColor = [System.Drawing.SystemColors]::Window
+            $script:txtSearchLog.ForeColor = [System.Drawing.SystemColors]::WindowText
             
             $script:rtbLogs.BackColor = [System.Drawing.SystemColors]::Window
             $script:rtbLogs.ForeColor = [System.Drawing.SystemColors]::WindowText
@@ -1493,6 +1621,7 @@ $btnUninstall.Add_Click({
             $pkgName = $txtPkg.Text.Trim()
             if (-not [string]::IsNullOrWhiteSpace($pkgName)) {
                 
+                # Validates the package name format to prevent shell injection vulnerabilities.
                 if ($pkgName -notmatch '^[a-zA-Z0-9\._\-]+$') {
                     [void][System.Windows.Forms.MessageBox]::Show("Invalid package name format. Only alphanumeric characters, dots, underscores, and dashes are allowed.", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                     return
