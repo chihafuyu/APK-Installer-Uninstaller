@@ -1228,7 +1228,7 @@ function Load-ApkList {
     $list.Items.Clear()
     $script:apkMap.Clear()
     
-    $files = Get-ChildItem -Filter *.apk -ErrorAction SilentlyContinue
+    $files = Get-ChildItem -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -match '\.(apk|apks|xapk|apkm)$' }
 
     foreach ($f in $files) {
         $sizeMB = [math]::Round($f.Length / 1MB, 2)
@@ -1265,7 +1265,7 @@ $list.Add_DragDrop({
     foreach ($file in $droppedFiles) {
         $fileInfo = Get-Item $file -ErrorAction SilentlyContinue
         
-        if ($null -ne $fileInfo -and $fileInfo.Extension.ToLower() -eq ".apk") {
+        if ($null -ne $fileInfo -and $fileInfo.Extension -match '\.(apk|apks|xapk|apkm)$') {
             $sizeMB = [math]::Round($fileInfo.Length / 1MB, 2)
             $displayText = "$($fileInfo.FullName) ($sizeMB MB)"
             
@@ -1333,7 +1333,7 @@ $chkDarkMode.Add_CheckedChanged({
 
 $btnBrowse.Add_Click({
     $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
-    $openFileDialog.Filter = "APK Files (*.apk)|*.apk"
+    $openFileDialog.Filter = "Android Packages (*.apk;*.apks;*.xapk;*.apkm)|*.apk;*.apks;*.xapk;*.apkm|All Files (*.*)|*.*"
     $openFileDialog.Title = "Select APK Files"
     $openFileDialog.Multiselect = $true
 
@@ -1760,46 +1760,109 @@ $btnInstall.Add_Click({
             $progress.Value = 0
             $apk = $script:apkMap[$itemText]
             $originalName = Split-Path $apk -Leaf
-            
-            $safeName = "install_$([Guid]::NewGuid().ToString('N').Substring(0,8)).apk"
+            $ext = [System.IO.Path]::GetExtension($apk).ToLower()
             
             Write-Log "--------------------------------"
             Write-Log "Processing: $originalName"
             
-            Write-Log "Pushing to device..."
-            $progress.Value = 30
-            
-            $pushArg = "-s `"$targetDev`" push `"$apk`" `"/data/local/tmp/$safeName`""
-            $pushResult = Run-AdbCommand $pushArg
-            Write-Log $pushResult
-
-            Write-Log "Installing..."
-            Write-Log "(Fake Source: $installerSource)"
-            $progress.Value = 70
-            
-            if ($chkReinstall.Checked) {
-                Write-Log "(Using -r flag for reinstallation)"
-                $installArg = "-s `"$targetDev`" shell pm install -r -i $installerSource `"/data/local/tmp/$safeName`""
+            if ($ext -match '\.(apks|xapk|apkm)$') {
+                Write-Log "Detected Bundle/Split Package ($ext). Extracting..."
+                $progress.Value = 20
+                
+                $tempExtDir = Join-Path ([System.IO.Path]::GetTempPath()) "bundle_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+                New-Item -ItemType Directory -Path $tempExtDir -Force | Out-Null
+                
+                try {
+                    $renamedZip = Join-Path $tempExtDir "temp.zip"
+                    Copy-Item -Path $apk -Destination $renamedZip -Force
+                    [System.Windows.Forms.Application]::DoEvents()
+                    Expand-Archive -Path $renamedZip -DestinationPath $tempExtDir -Force
+                    
+                    $splitApks = Get-ChildItem -Path $tempExtDir -Filter *.apk -Recurse
+                    
+                    if ($splitApks.Count -eq 0) {
+                        Write-Log "Error: No valid APK files found inside the bundle."
+                        continue
+                    }
+                    
+                    Write-Log "Found $($splitApks.Count) split APKs. Installing via install-multiple..."
+                    Write-Log "(Fake Source: $installerSource)"
+                    $progress.Value = 50
+                    
+                    $multipleArgs = "-s `"$targetDev`" install-multiple"
+                    if ($chkReinstall.Checked) {
+                        Write-Log "(Using -r flag for reinstallation)"
+                        $multipleArgs += " -r"
+                    }
+                    $multipleArgs += " -i $installerSource"
+                    
+                    foreach ($s in $splitApks) {
+                        $multipleArgs += " `"$($s.FullName)`""
+                    }
+                    
+                    $installResult = Run-AdbCommand $multipleArgs
+                    Write-Log "Result: $installResult"
+                    $progress.Value = 80
+                    
+                    # Check for OBB data inside .xapk
+                    $obbFolder = Join-Path $tempExtDir "Android\obb"
+                    if (Test-Path $obbFolder) {
+                        $obbItems = Get-ChildItem -Path $obbFolder -Directory
+                        foreach ($obbAppFolder in $obbItems) {
+                            Write-Log "Found OBB data. Pushing $($obbAppFolder.Name) to device..."
+                            [System.Windows.Forms.Application]::DoEvents()
+                            $pushObbArg = "-s `"$targetDev`" push `"$($obbAppFolder.FullName)`" `"/sdcard/Android/obb/`""
+                            $pushObbResult = Run-AdbCommand $pushObbArg
+                            Write-Log "OBB Push Result: $pushObbResult"
+                        }
+                    }
+                    
+                    $progress.Value = 100
+                    
+                } catch {
+                    Write-Log "Extraction or installation failed: $_"
+                } finally {
+                    if (Test-Path $tempExtDir) { Remove-Item $tempExtDir -Recurse -Force -ErrorAction SilentlyContinue }
+                }
             } else {
-                Write-Log "(Clean install, not using -r flag)"
-                $installArg = "-s `"$targetDev`" shell pm install -i $installerSource `"/data/local/tmp/$safeName`""
+                # Single APK installation
+                $safeName = "install_$([Guid]::NewGuid().ToString('N').Substring(0,8)).apk"
+                
+                Write-Log "Pushing to device..."
+                $progress.Value = 30
+                
+                $pushArg = "-s `"$targetDev`" push `"$apk`" `"/data/local/tmp/$safeName`""
+                $pushResult = Run-AdbCommand $pushArg
+                Write-Log $pushResult
+
+                Write-Log "Installing..."
+                Write-Log "(Fake Source: $installerSource)"
+                $progress.Value = 70
+                
+                if ($chkReinstall.Checked) {
+                    Write-Log "(Using -r flag for reinstallation)"
+                    $installArg = "-s `"$targetDev`" shell pm install -r -i $installerSource `"/data/local/tmp/$safeName`""
+                } else {
+                    Write-Log "(Clean install, not using -r flag)"
+                    $installArg = "-s `"$targetDev`" shell pm install -i $installerSource `"/data/local/tmp/$safeName`""
+                }
+                
+                $installResult = Run-AdbCommand $installArg
+                Write-Log "Result: $installResult"
+                
+                $progress.Value = 100
+                
+                for ($w = 0; $w -lt 15; $w++) {
+                    [System.Windows.Forms.Application]::DoEvents()
+                    Start-Sleep -Milliseconds 50
+                }
+                
+                Run-AdbCommand "-s `"$targetDev`" shell rm `"/data/local/tmp/$safeName`"" | Out-Null
             }
-            
-            $installResult = Run-AdbCommand $installArg
-            Write-Log "Result: $installResult"
-            
-            $progress.Value = 100
-            
-            for ($w = 0; $w -lt 15; $w++) {
-                [System.Windows.Forms.Application]::DoEvents()
-                Start-Sleep -Milliseconds 50
-            }
-            
-            Run-AdbCommand "-s `"$targetDev`" shell rm `"/data/local/tmp/$safeName`"" | Out-Null
         }
 
         Write-Log "--------------------------------"
-        Write-Log "All selected APKs have been processed."
+        Write-Log "All selected packages have been processed."
         [System.Media.SystemSounds]::Exclamation.Play()
 
     }
