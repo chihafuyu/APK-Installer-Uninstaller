@@ -120,6 +120,11 @@ $script:searchDebounceTimer = $null
 
 # Clean up Logcat resources to prevent memory leaks and orphaned processes.
 function Invoke-LogcatCleanup {
+    if ($null -ne $script:searchDebounceTimer) { 
+        $script:searchDebounceTimer.Stop()
+        $script:searchDebounceTimer.Dispose()
+        $script:searchDebounceTimer = $null
+    }
     if ($null -ne $script:logTimer) { 
         $script:logTimer.Stop()
         $script:logTimer.Dispose()
@@ -177,46 +182,27 @@ $menuUsb.Checked = $true
 $menuWifi = New-Object System.Windows.Forms.ToolStripMenuItem("Wireless (Local Wi-Fi)")
 $menuWifi.Checked = $false
 
-# Run ADB commands and capture the output safely without leaving 0-byte temp files.
+# Run ADB commands natively via Process Start, avoiding fragile cmd.exe batch parsing.
 function Run-AdbCommand($arguments) {
     $tempGuid = [Guid]::NewGuid().ToString("N")
-    $tmpBat = Join-Path ([System.IO.Path]::GetTempPath()) "adb_cmd_$tempGuid.bat"
     $tmpOut = Join-Path ([System.IO.Path]::GetTempPath()) "adb_out_$tempGuid.txt"
     $tmpErr = Join-Path ([System.IO.Path]::GetTempPath()) "adb_err_$tempGuid.txt"
     
     $resultOut = ""
     $resultErr = ""
-    $proc = $null
     
     try {
-        $batContent = "adb.exe $arguments > `"$tmpOut`" 2> `"$tmpErr`""
-        Set-Content -Path $tmpBat -Value $batContent -Encoding Ascii
-        
-        $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$tmpBat`"" -WindowStyle Hidden -PassThru -ErrorAction Stop
-        
-        if ($null -ne $proc) {
-            while (-not $proc.HasExited) {
-                [System.Windows.Forms.Application]::DoEvents()
-                Start-Sleep -Milliseconds 50
-            }
-        } else {
-            Start-Sleep -Seconds 1
-        }
+        # By bypassing cmd.exe and invoking the binary directly, we completely eliminate
+        # command injection bugs caused by special characters (&, %, ^, etc.) in app filenames.
+        $proc = Start-Process -FilePath "adb.exe" -ArgumentList $arguments -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr -WindowStyle Hidden -PassThru -Wait -ErrorAction Stop
         
         if (Test-Path $tmpOut) { $resultOut = [string](Get-Content $tmpOut -Raw -ErrorAction SilentlyContinue) }
         if (Test-Path $tmpErr) { $resultErr = [string](Get-Content $tmpErr -Raw -ErrorAction SilentlyContinue) }
     }
     catch {
-        Write-Debug "ADB Process execution failed."
+        Write-Debug "ADB Process execution failed: $_"
     }
     finally {
-        if ($null -ne $proc) { 
-            try { 
-                if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
-                $proc.Dispose() 
-            } catch { }
-        }
-        if (Test-Path $tmpBat) { Remove-Item $tmpBat -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tmpOut) { Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tmpErr) { Remove-Item $tmpErr -Force -ErrorAction SilentlyContinue }
     }
@@ -1228,7 +1214,7 @@ function Load-ApkList {
     $list.Items.Clear()
     $script:apkMap.Clear()
     
-    $files = Get-ChildItem -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -match '\.(apk|apks|xapk|apkm)$' }
+    $files = Get-ChildItem -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -match '\.(apk|apks|xapk|apkm|zip)$' }
 
     foreach ($f in $files) {
         $sizeMB = [math]::Round($f.Length / 1MB, 2)
@@ -1265,7 +1251,7 @@ $list.Add_DragDrop({
     foreach ($file in $droppedFiles) {
         $fileInfo = Get-Item $file -ErrorAction SilentlyContinue
         
-        if ($null -ne $fileInfo -and $fileInfo.Extension -match '\.(apk|apks|xapk|apkm)$') {
+        if ($null -ne $fileInfo -and $fileInfo.Extension -match '\.(apk|apks|xapk|apkm|zip)$') {
             $sizeMB = [math]::Round($fileInfo.Length / 1MB, 2)
             $displayText = "$($fileInfo.FullName) ($sizeMB MB)"
             
@@ -1333,7 +1319,7 @@ $chkDarkMode.Add_CheckedChanged({
 
 $btnBrowse.Add_Click({
     $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
-    $openFileDialog.Filter = "Android Packages (*.apk;*.apks;*.xapk;*.apkm)|*.apk;*.apks;*.xapk;*.apkm|All Files (*.*)|*.*"
+    $openFileDialog.Filter = "Android Packages (*.apk;*.apks;*.xapk;*.apkm;*.zip)|*.apk;*.apks;*.xapk;*.apkm;*.zip|All Files (*.*)|*.*"
     $openFileDialog.Title = "Select App Packages"
     $openFileDialog.Multiselect = $true
 
@@ -1765,7 +1751,7 @@ $btnInstall.Add_Click({
             Write-Log "--------------------------------"
             Write-Log "Processing: $originalName"
             
-            if ($ext -match '\.(apks|xapk|apkm)$') {
+            if ($ext -match '\.(apks|xapk|apkm|zip)$') {
                 Write-Log "Detected Bundle/Split Package ($ext). Extracting..."
                 $progress.Value = 20
                 
