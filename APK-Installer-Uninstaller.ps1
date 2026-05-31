@@ -182,27 +182,47 @@ $menuUsb.Checked = $true
 $menuWifi = New-Object System.Windows.Forms.ToolStripMenuItem("Wireless (Local Wi-Fi)")
 $menuWifi.Checked = $false
 
-# Run ADB commands natively via Process Start, avoiding fragile cmd.exe batch parsing.
+# Run ADB commands and capture the output safely using the bulletproof batch file architecture.
 function Run-AdbCommand($arguments) {
     $tempGuid = [Guid]::NewGuid().ToString("N")
+    $tmpBat = Join-Path ([System.IO.Path]::GetTempPath()) "adb_cmd_$tempGuid.bat"
     $tmpOut = Join-Path ([System.IO.Path]::GetTempPath()) "adb_out_$tempGuid.txt"
     $tmpErr = Join-Path ([System.IO.Path]::GetTempPath()) "adb_err_$tempGuid.txt"
     
     $resultOut = ""
     $resultErr = ""
+    $proc = $null
     
     try {
-        # By bypassing cmd.exe and invoking the binary directly, we completely eliminate
-        # command injection bugs caused by special characters (&, %, ^, etc.) in app filenames.
-        $proc = Start-Process -FilePath "adb.exe" -ArgumentList $arguments -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr -WindowStyle Hidden -PassThru -Wait -ErrorAction Stop
+        $batContent = "adb.exe $arguments > `"$tmpOut`" 2> `"$tmpErr`""
+        Set-Content -Path $tmpBat -Value $batContent -Encoding Ascii
+        
+        $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$tmpBat`"" -WindowStyle Hidden -PassThru -ErrorAction Stop
+        
+        if ($null -ne $proc) {
+            while (-not $proc.HasExited) {
+                # This DoEvents loop is the heartbeat of the GUI. It prevents the app from freezing.
+                [System.Windows.Forms.Application]::DoEvents()
+                Start-Sleep -Milliseconds 50
+            }
+        } else {
+            Start-Sleep -Seconds 1
+        }
         
         if (Test-Path $tmpOut) { $resultOut = [string](Get-Content $tmpOut -Raw -ErrorAction SilentlyContinue) }
         if (Test-Path $tmpErr) { $resultErr = [string](Get-Content $tmpErr -Raw -ErrorAction SilentlyContinue) }
     }
     catch {
-        Write-Debug "ADB Process execution failed: $_"
+        Write-Debug "ADB Process execution failed."
     }
     finally {
+        if ($null -ne $proc) { 
+            try { 
+                if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+                $proc.Dispose() 
+            } catch { }
+        }
+        if (Test-Path $tmpBat) { Remove-Item $tmpBat -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tmpOut) { Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tmpErr) { Remove-Item $tmpErr -Force -ErrorAction SilentlyContinue }
     }
@@ -713,6 +733,9 @@ $menuLogcat.Add_Click({
         $script:logFile = Join-Path ([System.IO.Path]::GetTempPath()) "adb_logcat_proxy_$tempGuid.log"
 
         try {
+            # Since logcat spawns an endless stream, we must STILL use native Start-Process here 
+            # (bypassing the .bat file) to properly pipe the output to our $script:logFile stream reader.
+            # We don't use -Wait here, so it safely runs in the background.
             $global:logcatProcess = Start-Process -FilePath "adb.exe" -ArgumentList $argList -RedirectStandardOutput $script:logFile -WindowStyle Hidden -PassThru -ErrorAction Stop
             
             $waitTicks = 0
