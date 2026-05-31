@@ -908,7 +908,7 @@ Enable-DoubleBuffer $tlpTopButtons
 $form.Controls.Add($tlpTopButtons)
 
 $btnBrowse = New-Object System.Windows.Forms.Button
-$btnBrowse.Text = "Browse APK"
+$btnBrowse.Text = "Browse App"
 $btnBrowse.Dock = [System.Windows.Forms.DockStyle]::Fill
 $btnBrowse.Margin = New-Object System.Windows.Forms.Padding(0, 0, 4, 0)
 $tlpTopButtons.Controls.Add($btnBrowse, 0, 0)
@@ -932,7 +932,7 @@ $btnRefresh.Margin = New-Object System.Windows.Forms.Padding(0, 0, 4, 0)
 $tlpTopButtons.Controls.Add($btnRefresh, 3, 0)
 
 $btnRemove = New-Object System.Windows.Forms.Button
-$btnRemove.Text = "Remove APK"
+$btnRemove.Text = "Remove App"
 $btnRemove.Dock = [System.Windows.Forms.DockStyle]::Fill
 $btnRemove.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 $tlpTopButtons.Controls.Add($btnRemove, 4, 0)
@@ -1289,7 +1289,7 @@ $btnRefresh.Add_Click({ Load-ApkList })
 
 $btnRemove.Add_Click({
     if ($list.CheckedIndices.Count -eq 0) {
-        [void][System.Windows.Forms.MessageBox]::Show("Please check (tick) the APK(s) from the list first to remove.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [void][System.Windows.Forms.MessageBox]::Show("Please check (tick) the App(s) from the list first to remove.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
     }
     
@@ -1334,7 +1334,7 @@ $chkDarkMode.Add_CheckedChanged({
 $btnBrowse.Add_Click({
     $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
     $openFileDialog.Filter = "Android Packages (*.apk;*.apks;*.xapk;*.apkm)|*.apk;*.apks;*.xapk;*.apkm|All Files (*.*)|*.*"
-    $openFileDialog.Title = "Select APK Files"
+    $openFileDialog.Title = "Select App Packages"
     $openFileDialog.Multiselect = $true
 
     try {
@@ -1688,7 +1688,7 @@ $btnUninstall.Add_Click({
 $btnInstall.Add_Click({
 
     if ($list.CheckedItems.Count -eq 0) {
-        [void][System.Windows.Forms.MessageBox]::Show("No APK selected.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [void][System.Windows.Forms.MessageBox]::Show("No App selected.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
     }
 
