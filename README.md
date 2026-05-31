@@ -1,10 +1,10 @@
-# APK Installer & Uninstaller
+# App Installer & Uninstaller
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Platform: Windows](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![Language: PowerShell](https://img.shields.io/badge/Language-PowerShell-blue.svg)
 
-A lightweight, portable Windows GUI utility built in PowerShell to easily manage Android applications (APKs) via Android Debug Bridge (ADB). 
+A lightweight, portable Windows GUI utility built in PowerShell to easily manage Android apps and app bundles via Android Debug Bridge (ADB). 
 
 This tool gives you a clean graphical interface for common ADB operations—like wireless debugging, logcat monitoring, batch installations, and system app debloating—without the hassle of typing manual command-line inputs.
 
@@ -36,6 +36,25 @@ This tool gives you a clean graphical interface for common ADB operations—like
   > ```
 * **Dark Mode:** Built-in toggle for a dark theme interface.
 * **Process Management:** Automatically terminates the ADB daemon after tasks are completed to allow safe USB ejection. Cleans up temporary proxy files and background processes when closed to ensure zero memory leaks.
+* **Bundle Support:** Natively process and install `.apk`, `.apkm`, `.xapk`, `.apks`, and raw `.zip` files! It automatically extracts them in the background, pushes the split packages via `install-multiple` adb command, and even auto-pushes OBB data if detected.
+
+> [!WARNING]
+> **📦 Wait, what about `.aab` (Android App Bundle) files?**
+>
+> You might see developers drop `.aab` files in their GitHub releases. This tool **intentionally ignores** them. Why? Because an `.aab` is a raw "blueprint" format meant for the Google Play Store servers, not your phone. Your Android device literally doesn't know how to install it directly!
+>
+> To install an `.aab` using this tool, you need to compile it into an `.apks` file first using Google's official `bundletool`.
+>
+> **Here's a quick tutorial on how to convert it:**
+> 1. Make sure you have Java (JRE or JDK) installed on your PC.
+> 2. Download the latest `bundletool.jar` from [Google's GitHub](https://github.com/google/bundletool/releases).
+> 3. Put your `.aab` file and `bundletool.jar` in the same folder.
+> 4. Open your terminal/command prompt in that folder and run this exact command:
+>    ```cmd
+>    java -jar bundletool.jar build-apks --bundle=your_app.aab --output=your_app.apks --mode=universal
+>
+> 5. You now have a compiled `your_app.apks` file. Just drag and drop that into the tool, and it will install flawlessly!
+>
 
 ## 🚀 Download & Run
 
