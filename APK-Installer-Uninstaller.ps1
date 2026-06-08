@@ -879,6 +879,313 @@ $menuLogcat.Add_Click({
 
 [void]$menuTools.DropDownItems.Add($menuLogcat)
 
+# =======================================================================================
+# NEW FEATURE: PULL APPS (Extract installed apps/games from device to PC)
+# =======================================================================================
+$menuPullApp = New-Object System.Windows.Forms.ToolStripMenuItem("Pull Apps")
+
+$menuPullApp.Add_Click({
+    $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    $targetDev = Get-TargetDevice $menuWifi.Checked
+    $form.Cursor = [System.Windows.Forms.Cursors]::Default
+
+    if ([string]::IsNullOrEmpty($targetDev)) {
+        $modeStr = if ($menuWifi.Checked) { "Wireless" } else { "USB Cable" }
+        [void][System.Windows.Forms.MessageBox]::Show("No active $modeStr device detected! Please connect your device or switch modes in the Settings menu.", "Device Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+
+    $script:targetDevLocked = $targetDev
+
+    $pullForm = New-Object System.Windows.Forms.Form
+    $pullForm.Text = "Pull Apps to PC - Device: $script:targetDevLocked"
+    $pullForm.Size = New-Object System.Drawing.Size(460, 560)
+    $pullForm.StartPosition = "CenterParent"
+    $pullForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $pullForm.MaximizeBox = $false
+    $pullForm.MinimizeBox = $false
+    Enable-DoubleBuffer $pullForm
+
+    $pullForm.Add_HandleCreated({
+        Set-TitleBarTheme $pullForm $chkDarkMode.Checked
+    })
+
+    if ($chkDarkMode.Checked) {
+        $pullForm.BackColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+        $pullForm.ForeColor = [System.Drawing.Color]::White
+    }
+
+    $lblDest = New-Object System.Windows.Forms.Label
+    $lblDest.Text = "Destination Folder (Where to save the apps):"
+    $lblDest.Location = New-Object System.Drawing.Point(20, 15)
+    $lblDest.Size = New-Object System.Drawing.Size(400, 20)
+    $pullForm.Controls.Add($lblDest)
+
+    $txtDest = New-Object System.Windows.Forms.TextBox
+    $txtDest.Location = New-Object System.Drawing.Point(20, 42)
+    $txtDest.Size = New-Object System.Drawing.Size(320, 20)
+    if ($chkDarkMode.Checked) {
+        $txtDest.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
+        $txtDest.ForeColor = [System.Drawing.Color]::White
+    }
+    $pullForm.Controls.Add($txtDest)
+
+    $btnBrowseDest = New-Object System.Windows.Forms.Button
+    $btnBrowseDest.Text = "Browse"
+    $btnBrowseDest.Location = New-Object System.Drawing.Point(345, 40)
+    $btnBrowseDest.Size = New-Object System.Drawing.Size(75, 24)
+    $pullForm.Controls.Add($btnBrowseDest)
+
+    $grpFilter = New-Object System.Windows.Forms.GroupBox
+    $grpFilter.Text = "App Filter"
+    $grpFilter.Location = New-Object System.Drawing.Point(20, 80)
+    $grpFilter.Size = New-Object System.Drawing.Size(400, 55)
+    if ($chkDarkMode.Checked) { $grpFilter.ForeColor = [System.Drawing.Color]::White }
+    $pullForm.Controls.Add($grpFilter)
+
+    $radUser = New-Object System.Windows.Forms.RadioButton
+    $radUser.Text = "User Apps"
+    $radUser.Location = New-Object System.Drawing.Point(10, 20)
+    $radUser.AutoSize = $true
+    $radUser.Checked = $true
+    $grpFilter.Controls.Add($radUser)
+
+    $radSystem = New-Object System.Windows.Forms.RadioButton
+    $radSystem.Text = "System Apps"
+    $radSystem.Location = New-Object System.Drawing.Point(100, 20)
+    $radSystem.AutoSize = $true
+    $grpFilter.Controls.Add($radSystem)
+
+    $radAll = New-Object System.Windows.Forms.RadioButton
+    $radAll.Text = "All Apps"
+    $radAll.Location = New-Object System.Drawing.Point(200, 20)
+    $radAll.AutoSize = $true
+    $grpFilter.Controls.Add($radAll)
+
+    $btnLoadApps = New-Object System.Windows.Forms.Button
+    $btnLoadApps.Text = "Load List"
+    $btnLoadApps.Location = New-Object System.Drawing.Point(280, 18)
+    $btnLoadApps.Size = New-Object System.Drawing.Size(110, 25)
+    $grpFilter.Controls.Add($btnLoadApps)
+
+    $listPull = New-Object System.Windows.Forms.CheckedListBox
+    $listPull.Location = New-Object System.Drawing.Point(20, 150)
+    $listPull.Size = New-Object System.Drawing.Size(400, 195)
+    $listPull.HorizontalScrollbar = $true
+    $listPull.CheckOnClick = $true
+    if ($chkDarkMode.Checked) {
+        $listPull.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
+        $listPull.ForeColor = [System.Drawing.Color]::White
+    }
+    $pullForm.Controls.Add($listPull)
+
+    $lblManual = New-Object System.Windows.Forms.Label
+    $lblManual.Text = "Or type exact Package Name manually (e.g., com.facebook.katana):"
+    $lblManual.Location = New-Object System.Drawing.Point(20, 360)
+    $lblManual.Size = New-Object System.Drawing.Size(400, 20)
+    $pullForm.Controls.Add($lblManual)
+
+    $txtManualPkg = New-Object System.Windows.Forms.TextBox
+    $txtManualPkg.Location = New-Object System.Drawing.Point(20, 385)
+    $txtManualPkg.Size = New-Object System.Drawing.Size(400, 20)
+    if ($chkDarkMode.Checked) {
+        $txtManualPkg.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
+        $txtManualPkg.ForeColor = [System.Drawing.Color]::White
+    }
+    $pullForm.Controls.Add($txtManualPkg)
+
+    $btnExecutePull = New-Object System.Windows.Forms.Button
+    $btnExecutePull.Text = "Pull Selected App(s)"
+    $btnExecutePull.Location = New-Object System.Drawing.Point(20, 425)
+    $btnExecutePull.Size = New-Object System.Drawing.Size(400, 35)
+    $pullForm.Controls.Add($btnExecutePull)
+
+    $lblPullStatus = New-Object System.Windows.Forms.Label
+    $lblPullStatus.Text = "Status: Ready."
+    $lblPullStatus.Location = New-Object System.Drawing.Point(20, 475)
+    $lblPullStatus.Size = New-Object System.Drawing.Size(400, 40)
+    $pullForm.Controls.Add($lblPullStatus)
+
+    if ($chkDarkMode.Checked) {
+        $flatBtns = @($btnBrowseDest, $btnLoadApps, $btnExecutePull)
+        foreach ($b in $flatBtns) {
+            $b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            $b.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 65)
+            $b.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+            $b.ForeColor = [System.Drawing.Color]::White
+        }
+    }
+
+    $btnBrowseDest.Add_Click({
+        $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+        $fbd.Description = "Select a folder to save the extracted apps"
+        if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $txtDest.Text = $fbd.SelectedPath
+        }
+        $fbd.Dispose()
+    })
+
+    $btnLoadApps.Add_Click({
+        $listPull.Items.Clear()
+        $pullForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $btnLoadApps.Enabled = $false
+        $lblPullStatus.Text = "Status: Fetching packages from device..."
+        [System.Windows.Forms.Application]::DoEvents()
+
+        $flag = ""
+        if ($radUser.Checked) { $flag = "-3" }
+        elseif ($radSystem.Checked) { $flag = "-s" }
+
+        $rawOutput = Run-AdbCommand "-s `"$script:targetDevLocked`" shell pm list packages $flag"
+        $packages = @($rawOutput -split "`r?`n" | Where-Object { $_ -match "^package:" } | ForEach-Object { $_.Replace("package:","").Trim() } | Sort-Object -Unique)
+        
+        foreach ($p in $packages) {
+            [void]$listPull.Items.Add($p, $false)
+        }
+
+        $lblPullStatus.Text = "Status: Found $($packages.Count) apps."
+        $btnLoadApps.Enabled = $true
+        $pullForm.Cursor = [System.Windows.Forms.Cursors]::Default
+    })
+
+    $btnExecutePull.Add_Click({
+        if ([string]::IsNullOrWhiteSpace($txtDest.Text)) {
+            [void][System.Windows.Forms.MessageBox]::Show("Please select a destination folder first.", "Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        if (-not (Test-Path $txtDest.Text)) {
+            [void][System.Windows.Forms.MessageBox]::Show("Destination folder does not exist.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+
+        $packagesToPull = @()
+        foreach ($item in $listPull.CheckedItems) { $packagesToPull += $item }
+        if (-not [string]::IsNullOrWhiteSpace($txtManualPkg.Text)) {
+            $pkgInput = $txtManualPkg.Text.Trim()
+            if ($packagesToPull -notcontains $pkgInput) { $packagesToPull += $pkgInput }
+        }
+
+        if ($packagesToPull.Count -eq 0) {
+            [void][System.Windows.Forms.MessageBox]::Show("Please select or type at least one package to pull.", "Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+
+        $pullForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $btnExecutePull.Enabled = $false
+        $btnLoadApps.Enabled = $false
+        $btnBrowseDest.Enabled = $false
+        $txtManualPkg.Enabled = $false
+        $listPull.Enabled = $false
+
+        $tempDir = ""
+
+        try {
+            foreach ($pkg in $packagesToPull) {
+                $lblPullStatus.Text = "Status: Locating paths for $pkg..."
+                [System.Windows.Forms.Application]::DoEvents()
+
+                $rawPaths = Run-AdbCommand "-s `"$script:targetDevLocked`" shell pm path `"$pkg`""
+                $paths = @($rawPaths -split "`r?`n" | Where-Object { $_ -match "^package:" } | ForEach-Object { $_.Substring(8).Trim() })
+
+                if ($paths.Count -eq 0) {
+                    $lblPullStatus.Text = "Status: $pkg not found on device. Skipping."
+                    [System.Windows.Forms.Application]::DoEvents()
+                    Start-Sleep -Seconds 1
+                    continue
+                }
+
+                $tempDir = Join-Path $txtDest.Text "temp_$pkg"
+                if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+                New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+                # Pull all APK parts
+                $lblPullStatus.Text = "Status: Pulling APK(s) for $pkg..."
+                [System.Windows.Forms.Application]::DoEvents()
+                foreach ($p in $paths) {
+                    Run-AdbCommand "-s `"$script:targetDevLocked`" pull `"$p`" `"$tempDir`"" | Out-Null
+                }
+
+                # Check if this app has an OBB directory
+                $lblPullStatus.Text = "Status: Checking OBB data for $pkg..."
+                [System.Windows.Forms.Application]::DoEvents()
+                $hasObb = $false
+                
+                $obbCheck = Run-AdbCommand "-s `"$script:targetDevLocked`" shell ls `"/sdcard/Android/obb/$pkg`""
+                if ($obbCheck -notmatch "No such file" -and $obbCheck -notmatch "Permission denied") {
+                    $checkDir = Run-AdbCommand "-s `"$script:targetDevLocked`" shell `"if [ -d /sdcard/Android/obb/$pkg ]; then echo 1; else echo 0; fi`""
+                    if ($checkDir.Trim() -eq "1") {
+                        $hasObb = $true
+                        $lblPullStatus.Text = "Status: Pulling OBB data for $pkg (This might take a while)..."
+                        [System.Windows.Forms.Application]::DoEvents()
+                        
+                        $obbDest = Join-Path $tempDir "Android\obb"
+                        New-Item -ItemType Directory -Path $obbDest -Force | Out-Null
+                        Run-AdbCommand "-s `"$script:targetDevLocked`" pull `"/sdcard/Android/obb/$pkg`" `"$obbDest`"" | Out-Null
+                    }
+                }
+
+                $lblPullStatus.Text = "Status: Packaging $pkg..."
+                [System.Windows.Forms.Application]::DoEvents()
+
+                if ($paths.Count -eq 1 -and -not $hasObb) {
+                    # Standard single APK. Move it out and rename it cleanly.
+                    $apkFile = Get-ChildItem -Path $tempDir -Filter *.apk | Select-Object -First 1
+                    if ($null -ne $apkFile) {
+                        Move-Item -Path $apkFile.FullName -Destination (Join-Path $txtDest.Text "$pkg.apk") -Force
+                    }
+                } else {
+                    # Bundle it up into a neat little .apks or .xapk
+                    $ext = if ($hasObb) { ".xapk" } else { ".apks" }
+                    $archivePath = Join-Path $txtDest.Text "$pkg$ext"
+                    if (Test-Path $archivePath) { Remove-Item $archivePath -Force -ErrorAction SilentlyContinue }
+                    
+                    # Compress-Archive natively rejects third-party extensions like .apks/.xapk directly.
+                    # We compress to a temporary .zip first, then safely rename/move it.
+                    $tempZipPath = Join-Path ([System.IO.Path]::GetTempPath()) "bundle_archive_$([Guid]::NewGuid().ToString('N')).zip"
+                    Compress-Archive -Path "$tempDir\*" -DestinationPath $tempZipPath -Force
+                    Move-Item -Path $tempZipPath -Destination $archivePath -Force
+                }
+
+                # Clean up the localized mess right away
+                if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+
+            $lblPullStatus.Text = "Status: All selected apps successfully pulled!"
+            [System.Media.SystemSounds]::Exclamation.Play()
+            [void][System.Windows.Forms.MessageBox]::Show("Pull complete! Check your destination folder.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+
+        } catch {
+            $lblPullStatus.Text = "Status: Error occurred during pull."
+            [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        } finally {
+            # Ensure the directory gets wiped regardless of crashes or unexpected runtime exceptions.
+            if (-not [string]::IsNullOrEmpty($tempDir) -and (Test-Path $tempDir)) { 
+                Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue 
+            }
+
+            # Safety first: Terminate ADB server interface lock immediately if logcat streaming is inactive.
+            if ($null -eq $global:logcatProcess -or $global:logcatProcess.HasExited) {
+                Write-Log "Releasing ADB interface lock after App Pull operation..."
+                Start-Process -FilePath "adb.exe" -ArgumentList "kill-server" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
+            }
+
+            $pullForm.Cursor = [System.Windows.Forms.Cursors]::Default
+            $btnExecutePull.Enabled = $true
+            $btnLoadApps.Enabled = $true
+            $btnBrowseDest.Enabled = $true
+            $txtManualPkg.Enabled = $true
+            $listPull.Enabled = $true
+        }
+    })
+
+    [void]$pullForm.ShowDialog()
+    $pullForm.Dispose()
+})
+
+[void]$menuTools.DropDownItems.Add($menuPullApp)
+# =======================================================================================
+
+
 # Help menu configuration.
 $menuHelp = New-Object System.Windows.Forms.ToolStripMenuItem("Help")
 $menuAbout = New-Object System.Windows.Forms.ToolStripMenuItem("About")
