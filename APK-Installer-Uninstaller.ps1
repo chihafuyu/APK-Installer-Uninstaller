@@ -32,27 +32,53 @@ if (-not $adbExists) {
             $zipPath = Join-Path $env:TEMP "platform-tools.zip"
             $url = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
             
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            # Upgrade to TLS 1.2 and TLS 1.3 (3072 is the enum value for Tls13 in modern .NET)
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor 3072
             Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
             
-            if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
-            [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $installDir)
+            # Extract to a temporary quarantine folder first
+            $quarantineDir = Join-Path $env:TEMP "adb_quarantine_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+            if (Test-Path $quarantineDir) { Remove-Item $quarantineDir -Recurse -Force -ErrorAction SilentlyContinue }
+            New-Item -ItemType Directory -Path $quarantineDir -Force | Out-Null
             
-            $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-            if ($userPath -notmatch [regex]::Escape($platformToolsDir)) {
-                $newPath = $userPath + ";$platformToolsDir"
-                [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-                $env:PATH += ";$platformToolsDir"
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $quarantineDir)
+            
+            # Authenticode Digital Signature Validation
+            $extractedAdb = Join-Path $quarantineDir "platform-tools\adb.exe"
+            if (Test-Path $extractedAdb) {
+                $sig = Get-AuthenticodeSignature $extractedAdb
+                if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch "Google") {
+                    throw "Security Exception: Downloaded adb.exe failed digital signature validation. It may be corrupted or compromised."
+                }
+            } else {
+                throw "Archive structure invalid. adb.exe not found."
+            }
+
+            # Safe move after validation
+            if (-not (Test-Path $platformToolsDir)) { New-Item -ItemType Directory -Path $platformToolsDir -Force | Out-Null }
+            Copy-Item -Path (Join-Path $quarantineDir "platform-tools\*") -Destination $platformToolsDir -Recurse -Force
+            Remove-Item $quarantineDir -Recurse -Force -ErrorAction SilentlyContinue
+            
+            # Explicit PATH validation before injecting
+            if (Test-Path (Join-Path $platformToolsDir "adb.exe")) {
+                $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+                if ($userPath -notmatch [regex]::Escape($platformToolsDir)) {
+                    $newPath = $userPath + ";$platformToolsDir"
+                    [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+                    $env:PATH += ";$platformToolsDir"
+                }
+            } else {
+                throw "Failed to copy adb.exe to the destination folder."
             }
             
             Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
             $dlForm.Close()
             $dlForm.Dispose()
-            [void][System.Windows.Forms.MessageBox]::Show("Android Platform Tools successfully installed! The application will now start.", "Installation Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            [void][System.Windows.Forms.MessageBox]::Show("Android Platform Tools successfully installed and securely validated! The application will now start.", "Installation Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         } catch {
             $dlForm.Close()
             $dlForm.Dispose()
-            [void][System.Windows.Forms.MessageBox]::Show("Failed to download or install ADB: $($_.Exception.Message)`n`nPlease install it manually and restart the application.", "Download Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            [void][System.Windows.Forms.MessageBox]::Show("Failed to download or install ADB: $($_.Exception.Message)`n`nPlease try again or install it manually.", "Security / Download Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             exit
         }
     } else {
