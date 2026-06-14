@@ -1,6 +1,9 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Load .NET assembly required for fast ZIP extraction and Anti ZIP-Bomb measures
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
 # Check if ADB is available. If not, prompt the user to download and configure it.
 $adbExists = Get-Command "adb.exe" -ErrorAction SilentlyContinue
 if (-not $adbExists) {
@@ -33,7 +36,7 @@ if (-not $adbExists) {
             Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
             
             if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
-            Expand-Archive -Path $zipPath -DestinationPath $installDir -Force
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $installDir)
             
             $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
             if ($userPath -notmatch [regex]::Escape($platformToolsDir)) {
@@ -922,6 +925,7 @@ $menuPullApp.Add_Click({
     $pullForm.Controls.Add($lblDest)
 
     $txtDest = New-Object System.Windows.Forms.TextBox
+    # Adjusting layout constraints down a bit to prevent window frame text clipping
     $txtDest.Location = New-Object System.Drawing.Point(20, 42)
     $txtDest.Size = New-Object System.Drawing.Size(320, 20)
     if ($chkDarkMode.Checked) {
@@ -932,6 +936,7 @@ $menuPullApp.Add_Click({
 
     $btnBrowseDest = New-Object System.Windows.Forms.Button
     $btnBrowseDest.Text = "Browse"
+    # Align browse button smoothly with the shifted destination text box
     $btnBrowseDest.Location = New-Object System.Drawing.Point(345, 40)
     $btnBrowseDest.Size = New-Object System.Drawing.Size(75, 24)
     $pullForm.Controls.Add($btnBrowseDest)
@@ -2082,22 +2087,58 @@ $btnInstall.Add_Click({
             Write-Log "Processing: $originalName"
             
             if ($ext -match '\.(apks|xapk|apkm|zip)$') {
-                Write-Log "Detected Bundle/Split Package ($ext). Extracting..."
-                $progress.Value = 20
+                Write-Log "Detected Bundle/Split Package ($ext). Validating & Extracting..."
+                $progress.Value = 10
                 
+                # Memory-safe ZIP Bomb Validation
+                $isValid = $true
+                $zip = $null
+                try {
+                    $zip = [System.IO.Compression.ZipFile]::OpenRead($apk)
+                    if ($zip.Entries.Count -gt 10000) {
+                        Write-Log "Error: Archive contains too many entries ($($zip.Entries.Count)). Skipping to prevent CPU exhaustion."
+                        $isValid = $false
+                    } else {
+                        $totalUncompressedSize = 0
+                        foreach ($entry in $zip.Entries) { $totalUncompressedSize += $entry.Length }
+                        if (([math]::Round($totalUncompressedSize / 1MB, 2)) -gt 3500) {
+                            Write-Log "Error: Uncompressed size is dangerously large (> 3.5GB). Skipping to prevent resource exhaustion."
+                            $isValid = $false
+                        }
+                    }
+                } catch {
+                    Write-Log "Error: Failed to read archive structure. The file might be corrupted."
+                    $isValid = $false
+                } finally {
+                    if ($null -ne $zip) { $zip.Dispose() }
+                }
+
+                if (-not $isValid) { continue }
+                
+                $progress.Value = 20
                 $tempExtDir = Join-Path ([System.IO.Path]::GetTempPath()) "bundle_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
                 New-Item -ItemType Directory -Path $tempExtDir -Force | Out-Null
                 
                 try {
-                    $renamedZip = Join-Path $tempExtDir "temp.zip"
-                    Copy-Item -Path $apk -Destination $renamedZip -Force
                     [System.Windows.Forms.Application]::DoEvents()
-                    Expand-Archive -Path $renamedZip -DestinationPath $tempExtDir -Force
+                    # Native fast extraction
+                    [System.IO.Compression.ZipFile]::ExtractToDirectory($apk, $tempExtDir)
                     
+                    $baseApkCheck = Get-ChildItem -Path $tempExtDir -Filter 'base.apk' -Recurse
+                    if (-not $baseApkCheck) {
+                        Write-Log "Error: 'base.apk' is missing from the bundle. Invalid archive structure. Skipping..."
+                        continue
+                    }
+
                     $splitApks = Get-ChildItem -Path $tempExtDir -Filter *.apk -Recurse
                     
                     if ($splitApks.Count -eq 0) {
                         Write-Log "Error: No valid APK files found inside the bundle."
+                        continue
+                    }
+
+                    if ($splitApks.Count -gt 150) {
+                        Write-Log "Error: APK fragment count exceeds safe limit ($($splitApks.Count) files). Skipping to prevent command-line overflow."
                         continue
                     }
                     
