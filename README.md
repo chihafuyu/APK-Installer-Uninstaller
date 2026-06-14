@@ -23,6 +23,10 @@ This tool gives you a clean graphical interface for common ADB operations—like
 * **Wireless Debugging:** Connects to Android 11+ devices via mDNS over local Wi-Fi. It includes a manual IP fallback and a secure pairing dialog for unauthenticated devices.
 * **Device Targeting:** Automatically routes commands to the correct device based on your active connection mode (USB or Wireless).
 * **Batch Installation:** Install multiple `.apk` files sequentially. It uses temporary GUID proxy filenames to prevent Android shell syntax errors when installing files with spaces or special characters.
+* **App Extractor (Pull Apps):** Extract installed apps or games directly from your device to your PC!
+* Automatic Bundling: If an app is a split-APK, it will automatically zip all parts into a clean `.apks` file.
+* OBB Detection: It silently checks for OBB data. If found, it grabs the data, merges it with the APKs, and spits out a ready-to-share .xapk file!
+* Filtering & Manual Pull: Filter by User Apps, System Apps, or easily type the exact package name you want to pull.
 * **Drag-and-Drop:** Add APK files to your queue easily by dragging them straight from Windows Explorer.
 * **Uninstaller Options:**
   * **Standard:** Completely removes the app and its data.
@@ -30,10 +34,40 @@ This tool gives you a clean graphical interface for common ADB operations—like
   * **System App:** Uninstalls OEM bloatware for the current user (`--user 0`). No root required.
   * **Disable App:** Hides and disables apps (useful for bypassing strict Xiaomi/Oppo OS restrictions).
 * **Fake Installer Sources:** Spoofs the installation source (e.g., Play Store, Aurora Store, F-Droid Basic). Custom package names are completely supported and saved automatically for your next session.
-  > **⚠️ Note:** Aurora Store and F-Droid Basic require their respective apps to be installed on your device beforehand to be recognized as valid sources. If you don't want to use them, you can simply spoof the default Android Package Installer. Just copy and paste the following package name into the **Custom** field:
-  > ```text
-  > com.google.android.packageinstaller
-  > ```
+  > **⚠️ Note:** Aurora Store and F-Droid Basic require their respective apps to be installed on your device beforehand to be recognized as valid sources.
+  > **💡 OEM Store Spoofing Guide:**
+  If you are using an OEM device (Samsung, OPPO, Vivo, Xiaomi, Realme, etc.), you can easily spoof its native app store. Just copy and paste one of these into the Custom field:
+  * Samsung (Galaxy Store): 
+  ```text
+  com.sec.android.app.samsungapps
+  ```
+  * Huawei (AppGallery):
+  ```text
+  com.huawei.appmarket
+  ```
+  * OPPO/Realme/OnePlus (App Market):
+  ```text
+  com.oppo.market
+  ```
+  * VIVO (V-Appstore):
+  ```text
+  com.vivo.appstore
+  ```
+  * Xiaomi/POCO/Redmi (GetApps):
+  ```text
+  com.xiaomi.mipicks
+  ```
+  * Amazon Fire (Amazon AppStore):
+  ```text
+  com.amazon.venezia
+  ```
+  * Standard Android Package Installer: 
+  ```text
+  com.google.android.packageinstaller
+  ```
+  
+  (For other devices, just look for a built-in app named "App Market" or similar, find its package ID, and drop it into the Custom field!)
+
 * **Dark Mode:** Built-in toggle for a dark theme interface.
 * **Process Management:** Automatically terminates the ADB daemon after tasks are completed to allow safe USB ejection. Cleans up temporary proxy files and background processes when closed to ensure zero memory leaks.
 * **Bundle Support:** Natively process and install `.apk`, `.apkm`, `.xapk`, `.apks`, and raw `.zip` files! It automatically extracts them in the background, pushes the split packages via `install-multiple` adb command, and even auto-pushes OBB data if detected.
