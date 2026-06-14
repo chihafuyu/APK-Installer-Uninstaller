@@ -35,6 +35,7 @@ This tool gives you a clean graphical interface for common ADB operations—like
   * **Disable App:** Hides and disables apps (useful for bypassing strict Xiaomi/Oppo OS restrictions).
 * **Fake Installer Sources:** Spoofs the installation source (e.g., Play Store, Aurora Store, F-Droid Basic). Custom package names are completely supported and saved automatically for your next session.
   > **⚠️ Note:** Aurora Store and F-Droid Basic require their respective apps to be installed on your device beforehand to be recognized as valid sources.
+  
   > **💡 OEM Store Spoofing Guide:**
   If you are using an OEM device (Samsung, OPPO, Vivo, Xiaomi, Realme, etc.), you can easily spoof its native app store. Just copy and paste one of these into the Custom field:
   * Samsung (Galaxy Store): 
