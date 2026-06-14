@@ -1,3 +1,6 @@
+# Silently start an audit transcript for security logging
+try { Start-Transcript -Path "$env:TEMP\APKInstaller-Audit.log" -Append -ErrorAction SilentlyContinue } catch {}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -32,10 +35,25 @@ if (-not $adbExists) {
             $zipPath = Join-Path $env:TEMP "platform-tools.zip"
             $url = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
             
-            # Upgrade to TLS 1.2 and TLS 1.3 (3072 is the enum value for Tls13 in modern .NET)
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor 3072
+            # Enforce TLS 1.2 and safely append TLS 1.3 if the OS supports it
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            if ([enum]::GetNames([Net.SecurityProtocolType]) -contains "Tls13") {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13
+            }
+            
             Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
             
+            # Prevent ZIP-bombing from hijacked DNS/download
+            $dlZipObj = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+            try {
+                if ($dlZipObj.Entries.Count -gt 5000) { throw "Security Exception: Too many files in the ADB archive (possible ZIP bomb)." }
+                $dlTotalSize = 0
+                foreach ($entry in $dlZipObj.Entries) { $dlTotalSize += $entry.Length }
+                if (([math]::Round($dlTotalSize / 1MB, 2)) -gt 200) { throw "Security Exception: Archive is suspiciously large (>200MB)." }
+            } finally {
+                if ($null -ne $dlZipObj) { $dlZipObj.Dispose() }
+            }
+
             # Extract to a temporary quarantine folder first
             $quarantineDir = Join-Path $env:TEMP "adb_quarantine_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
             if (Test-Path $quarantineDir) { Remove-Item $quarantineDir -Recurse -Force -ErrorAction SilentlyContinue }
@@ -59,13 +77,22 @@ if (-not $adbExists) {
             Copy-Item -Path (Join-Path $quarantineDir "platform-tools\*") -Destination $platformToolsDir -Recurse -Force
             Remove-Item $quarantineDir -Recurse -Force -ErrorAction SilentlyContinue
             
-            # Explicit PATH validation before injecting
+            # Explicit PATH validation with a safe rollback mechanism
             if (Test-Path (Join-Path $platformToolsDir "adb.exe")) {
-                $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-                if ($userPath -notmatch [regex]::Escape($platformToolsDir)) {
-                    $newPath = $userPath + ";$platformToolsDir"
-                    [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-                    $env:PATH += ";$platformToolsDir"
+                $originalUserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+                $originalEnvPath = $env:PATH
+                
+                try {
+                    if ($originalUserPath -notmatch [regex]::Escape($platformToolsDir)) {
+                        $newPath = $originalUserPath + ";$platformToolsDir"
+                        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+                        $env:PATH += ";$platformToolsDir"
+                    }
+                } catch {
+                    # Rollback to original state if injection fails
+                    [Environment]::SetEnvironmentVariable("PATH", $originalUserPath, "User")
+                    $env:PATH = $originalEnvPath
+                    throw "Failed to safely update PATH variable. Rolled back."
                 }
             } else {
                 throw "Failed to copy adb.exe to the destination folder."
