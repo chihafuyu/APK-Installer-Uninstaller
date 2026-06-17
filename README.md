@@ -24,9 +24,9 @@ This tool gives you a clean graphical interface for common ADB operations—like
 * **Device Targeting:** Automatically routes commands to the correct device based on your active connection mode (USB or Wireless).
 * **Batch Installation:** Install multiple `.apk` files sequentially. It uses temporary GUID proxy filenames to prevent Android shell syntax errors when installing files with spaces or special characters.
 * **App Extractor (Pull Apps):** Extract installed apps or games directly from your device to your PC!
-* Automatic Bundling: If an app is a split-APK, it will automatically zip all parts into a clean `.apks` file.
-* OBB Detection: It silently checks for OBB data. If found, it grabs the data, merges it with the APKs, and spits out a ready-to-share .xapk file!
-* Filtering & Manual Pull: Filter by User Apps, System Apps, or easily type the exact package name you want to pull.
+  * **Automatic Bundling:** If an app is a split-APK, it will automatically zip all parts into a clean `.apks` file.
+  * **OBB Detection:** It silently checks for OBB data. If found, it grabs the data, merges it with the APKs, and spits out a ready-to-share .xapk file!
+  * **Filtering & Manual Pull:** Filter by User Apps, System Apps, or easily type the exact package name you want to pull.
 * **Drag-and-Drop:** Add APK files to your queue easily by dragging them straight from Windows Explorer.
 * **Uninstaller Options:**
   * **Standard:** Completely removes the app and its data.
