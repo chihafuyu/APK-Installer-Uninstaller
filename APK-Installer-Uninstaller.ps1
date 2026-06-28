@@ -1,13 +1,13 @@
-# Silently start an audit transcript for security logging
+# Start an invisible audit transcript for security logging
 try { Start-Transcript -Path "$env:TEMP\APKInstaller-Audit.log" -Append -ErrorAction SilentlyContinue } catch {}
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Load .NET assembly required for fast ZIP extraction and Anti ZIP-Bomb measures
+# Required for fast native ZIP extraction and archive validation
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-# Check if ADB is available. If not, prompt the user to download and configure it.
+# Verify ADB presence. Prompt the user for an automated download if it's missing.
 $adbExists = Get-Command "adb.exe" -ErrorAction SilentlyContinue
 if (-not $adbExists) {
     $msgResult = [System.Windows.Forms.MessageBox]::Show("The 'adb.exe' binary was not found in the system PATH.`n`nWould you like this tool to automatically download Android Platform Tools from Google and configure it for you?", "ADB Not Found", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
@@ -35,7 +35,7 @@ if (-not $adbExists) {
             $zipPath = Join-Path $env:TEMP "platform-tools.zip"
             $url = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
             
-            # Enforce TLS 1.2 and safely append TLS 1.3 if the OS supports it
+            # Enforce TLS 1.2 and safely bump it up to TLS 1.3 if the host OS supports it
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             if ([enum]::GetNames([Net.SecurityProtocolType]) -contains "Tls13") {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13
@@ -43,10 +43,10 @@ if (-not $adbExists) {
             
             Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
             
-            # Prevent ZIP-bombing from hijacked DNS/download
+            # Pre-extraction structural check to filter out abnormally huge archives
             $dlZipObj = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
             try {
-                if ($dlZipObj.Entries.Count -gt 5000) { throw "Security Exception: Too many files in the ADB archive (possible ZIP bomb)." }
+                if ($dlZipObj.Entries.Count -gt 5000) { throw "Security Exception: Archive contains too many files." }
                 $dlTotalSize = 0
                 foreach ($entry in $dlZipObj.Entries) { $dlTotalSize += $entry.Length }
                 if (([math]::Round($dlTotalSize / 1MB, 2)) -gt 200) { throw "Security Exception: Archive is suspiciously large (>200MB)." }
@@ -54,7 +54,7 @@ if (-not $adbExists) {
                 if ($null -ne $dlZipObj) { $dlZipObj.Dispose() }
             }
 
-            # Extract to a temporary quarantine folder first
+            # Extract the package to a temporary quarantine directory first
             $quarantineDir = Join-Path $env:TEMP "adb_quarantine_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
             if (Test-Path $quarantineDir) { Remove-Item $quarantineDir -Recurse -Force -ErrorAction SilentlyContinue }
             New-Item -ItemType Directory -Path $quarantineDir -Force | Out-Null
@@ -72,12 +72,12 @@ if (-not $adbExists) {
                 throw "Archive structure invalid. adb.exe not found."
             }
 
-            # Safe move after validation
+            # Validated. Safe to move files into the permanent directory.
             if (-not (Test-Path $platformToolsDir)) { New-Item -ItemType Directory -Path $platformToolsDir -Force | Out-Null }
             Copy-Item -Path (Join-Path $quarantineDir "platform-tools\*") -Destination $platformToolsDir -Recurse -Force
             Remove-Item $quarantineDir -Recurse -Force -ErrorAction SilentlyContinue
             
-            # Explicit PATH validation with a safe rollback mechanism
+            # Safely inject the new directory into the user's environment PATH variable
             if (Test-Path (Join-Path $platformToolsDir "adb.exe")) {
                 $originalUserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
                 $originalEnvPath = $env:PATH
@@ -89,7 +89,7 @@ if (-not $adbExists) {
                         $env:PATH += ";$platformToolsDir"
                     }
                 } catch {
-                    # Rollback to original state if injection fails
+                    # Execute a graceful rollback if the PATH injection fails
                     [Environment]::SetEnvironmentVariable("PATH", $originalUserPath, "User")
                     $env:PATH = $originalEnvPath
                     throw "Failed to safely update PATH variable. Rolled back."
@@ -113,7 +113,7 @@ if (-not $adbExists) {
     }
 }
 
-# Import Windows APIs for custom dark mode title bar rendering.
+# Import Windows APIs for custom dark mode title bar rendering
 try {
     if (-not ("ChihafuyuDwmApi" -as [type])) {
         $dwmCode = @'
@@ -133,7 +133,7 @@ try {
     Write-Debug "Failed to initialize DWM API. Custom dark title bar rendering will be disabled."
 }
 
-# Force the window title bar to match the dark theme.
+# Force the window title bar to match the dark theme
 function Set-TitleBarTheme($targetForm, [bool]$IsDark) {
     try {
         if ($null -ne $targetForm -and $targetForm.Handle -ne [System.IntPtr]::Zero) {
@@ -151,7 +151,7 @@ function Set-TitleBarTheme($targetForm, [bool]$IsDark) {
     }
 }
 
-# Enable double buffering to prevent UI flickering during updates.
+# Enable double buffering to prevent UI flickering during heavy layout updates
 function Enable-DoubleBuffer($control) {
     try {
         $prop = $control.GetType().GetProperty("DoubleBuffered", [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::NonPublic)
@@ -161,11 +161,100 @@ function Enable-DoubleBuffer($control) {
     }
 }
 
-# Regex patterns for identifying Wi-Fi devices.
+# =======================================================================================
+# Smooth Custom Progress Bar
+# =======================================================================================
+function Out-CustomProgressBar {
+    param($Parent, $Location, $Size)
+    $pb = New-Object System.Windows.Forms.PictureBox
+    $pb.Location = $Location
+    $pb.Size = $Size
+    $pb.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    
+    $pb | Add-Member -MemberType NoteProperty -Name "ProgValue" -Value 0
+    $pb | Add-Member -MemberType NoteProperty -Name "ProgText" -Value "Ready"
+    
+    $pb.Add_Paint({
+        param($sender, $e)
+        $g = $e.Graphics
+        $rect = $sender.ClientRectangle
+        
+        # High-quality 2D rendering for smooth text and sharp edges
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+        
+        # Resolve background color condition before creating the brush to prevent syntax parser crash
+        $bgColor = if ($chkDarkMode.Checked) { [System.Drawing.Color]::FromArgb(45, 45, 48) } else { [System.Drawing.SystemColors]::ControlLight }
+        $bgBrush = New-Object System.Drawing.SolidBrush($bgColor)
+        $g.FillRectangle($bgBrush, $rect)
+        $bgBrush.Dispose()
+        
+        $val = $sender.ProgValue
+        if ($val -lt 0) { $val = 0 }
+        if ($val -gt 100) { $val = 100 }
+        
+        $fillWidth = [int]($rect.Width * ($val / 100.0))
+        if ($fillWidth -gt 0) {
+            # Bright solid green fill color
+            $fillBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(20, 200, 40))
+            $fillRect = New-Object System.Drawing.Rectangle(0, 0, $fillWidth, $rect.Height)
+            $g.FillRectangle($fillBrush, $fillRect)
+            $fillBrush.Dispose()
+        }
+        
+        # Overlay the progress percentage text perfectly centered
+        $txt = $sender.ProgText
+        if (-not [string]::IsNullOrEmpty($txt)) {
+            $font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+            
+            $textColor = if ($chkDarkMode.Checked) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::Black }
+            $textBrush = New-Object System.Drawing.SolidBrush($textColor)
+            
+            # Subtle drop shadow for perfect legibility over the moving green background
+            $shadowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(60, 120, 120, 120))
+            
+            $textSize = $g.MeasureString($txt, $font)
+            $x = ($rect.Width - $textSize.Width) / 2
+            $y = ($rect.Height - $textSize.Height) / 2
+            
+            if ($chkDarkMode.Checked) {
+                $g.DrawString($txt, $font, $shadowBrush, $x + 1, $y + 1)
+            }
+            $g.DrawString($txt, $font, $textBrush, $x, $y)
+            
+            $textBrush.Dispose()
+            $shadowBrush.Dispose()
+            $font.Dispose()
+        }
+        
+        # Canvas border
+        $penColor = if ($chkDarkMode.Checked) { [System.Drawing.Color]::FromArgb(80, 80, 80) } else { [System.Drawing.SystemColors]::ControlDark }
+        $borderPen = New-Object System.Drawing.Pen($penColor, 1)
+        $g.DrawRectangle($borderPen, 0, 0, $rect.Width - 1, $rect.Height - 1)
+        $borderPen.Dispose()
+    })
+    
+    $Parent.Controls.Add($pb)
+    return $pb
+}
+
+# Helper method to dynamically update the progress bar and force an immediate redraw
+function Set-Progress {
+    param($Control, [int]$Value, [string]$Text)
+    if ($null -ne $Control) {
+        $Control.ProgValue = $Value
+        $Control.ProgText = $Text
+        $Control.Invalidate()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+}
+# =======================================================================================
+
+# Regex patterns for parsing mDNS and Wi-Fi debugging IPs
 $script:PATTERN_WIFI_DEVICE = "\._adb-tls-connect\._tcp"
 $script:PATTERN_IP_PORT = "\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b"
 
-# Global variables for the Logcat viewer.
+# Global scope variables for the Logcat viewer window
 $global:activeLogcatForm = $null
 $global:logcatProcess = $null
 $script:logFile = ""
@@ -174,7 +263,7 @@ $script:logReader = $null
 $script:logTimer = $null
 $script:searchDebounceTimer = $null
 
-# Clean up Logcat resources to prevent memory leaks and orphaned processes.
+# Ensure proper memory clearance and kill orphaned ADB sub-processes
 function Invoke-LogcatCleanup {
     if ($null -ne $script:searchDebounceTimer) { 
         $script:searchDebounceTimer.Stop()
@@ -207,7 +296,7 @@ function Invoke-LogcatCleanup {
     }
 }
 
-# Main application setup.
+# Main Application Window Layout
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "APK Installer & Uninstaller" 
 $form.Size = New-Object System.Drawing.Size(520,640) 
@@ -223,7 +312,6 @@ $form.Add_HandleCreated({
 
 $menuStrip = New-Object System.Windows.Forms.MenuStrip
 
-# Menu strip configuration.
 $menuFile = New-Object System.Windows.Forms.ToolStripMenuItem("File")
 $menuExit = New-Object System.Windows.Forms.ToolStripMenuItem("Exit")
 $menuExit.Add_Click({ $form.Close() })
@@ -238,7 +326,8 @@ $menuUsb.Checked = $true
 $menuWifi = New-Object System.Windows.Forms.ToolStripMenuItem("Wireless (Local Wi-Fi)")
 $menuWifi.Checked = $false
 
-# Run ADB commands and capture the output safely using the bulletproof batch file architecture.
+# Bulletproof execution wrapper. Runs ADB commands purely by dropping temp batch scripts
+# to avoid PowerShell pipeline command injection bugs caused by spaces or weird characters.
 function Run-AdbCommand($arguments) {
     $tempGuid = [Guid]::NewGuid().ToString("N")
     $tmpBat = Join-Path ([System.IO.Path]::GetTempPath()) "adb_cmd_$tempGuid.bat"
@@ -257,7 +346,7 @@ function Run-AdbCommand($arguments) {
         
         if ($null -ne $proc) {
             while (-not $proc.HasExited) {
-                # This DoEvents loop is the heartbeat of the GUI. It prevents the app from freezing.
+                # Force the GUI to remain highly responsive during heavy background operations
                 [System.Windows.Forms.Application]::DoEvents()
                 Start-Sleep -Milliseconds 50
             }
@@ -287,7 +376,7 @@ function Run-AdbCommand($arguments) {
     return $result.Trim()
 }
 
-# Find the currently connected device based on the selected mode (USB or Wi-Fi).
+# Dynamically parse the target device based on the active connection mode setting
 function Get-TargetDevice([bool]$IsWifiMode) {
     $devicesOut = Run-AdbCommand "devices"
     [string[]]$allLines = $devicesOut -split "`r?`n"
@@ -400,7 +489,7 @@ $menuWifi.Add_Click({
         $wifiForm.Controls.AddRange(@($btnRetry, $btnPair, $btnOk))
         $wifiForm.AcceptButton = $btnOk
 
-        # Display the pairing dialog for Android 11+ wireless debugging.
+        # Sub-menu for pairing Android 11+ devices via secure 6-digit codes
         $btnPair.Add_Click({
             $pairForm = New-Object System.Windows.Forms.Form
             $pairForm.Text = "Pair New Device"
@@ -565,13 +654,15 @@ $menuWifi.Add_Click({
 [void]$menuSource.DropDownItems.Add($menuWifi)
 [void]$menuSettings.DropDownItems.Add($menuSource)
 
-# Tools menu.
 $menuTools = New-Object System.Windows.Forms.ToolStripMenuItem("Tools")
-$menuLogcat = New-Object System.Windows.Forms.ToolStripMenuItem("Capture Logcat")
 
+# =======================================================================================
+# Capture Logcat Interface Setup
+# =======================================================================================
+$menuLogcat = New-Object System.Windows.Forms.ToolStripMenuItem("Capture Logcat")
 $menuLogcat.Add_Click({
 
-    # Ensure only one Logcat window is open at a time.
+    # Force singleton pattern for the Logcat window
     if ($null -ne $global:activeLogcatForm -and -not $global:activeLogcatForm.IsDisposed) {
         if ($global:activeLogcatForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
             $global:activeLogcatForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
@@ -590,7 +681,6 @@ $menuLogcat.Add_Click({
         return
     }
     
-    # Lock in the device ID so it remains consistent while reading logs.
     $script:targetDevLocked = $targetDev
 
     $global:activeLogcatForm = New-Object System.Windows.Forms.Form
@@ -604,7 +694,6 @@ $menuLogcat.Add_Click({
         Set-TitleBarTheme $global:activeLogcatForm $chkDarkMode.Checked
     })
 
-    # Adjust layout coordinates and set manual height for the Search box for perfect alignment.
     $script:cmbLevel = New-Object System.Windows.Forms.ComboBox
     $script:cmbLevel.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     $script:cmbLevel.Items.AddRange(@("Verbose (*:V)", "Debug (*:D)", "Info (*:I)", "Warning (*:W)", "Error (*:E)", "Fatal (*:F)"))
@@ -623,7 +712,7 @@ $menuLogcat.Add_Click({
     $script:lblSearch.Location = New-Object System.Drawing.Point(375, 20)
 
     $script:txtSearchLog = New-Object System.Windows.Forms.TextBox
-    $script:txtSearchLog.AutoSize = $false # Disable auto-size to force a 25px height.
+    $script:txtSearchLog.AutoSize = $false
     $script:txtSearchLog.Location = New-Object System.Drawing.Point(425, 15)
     $script:txtSearchLog.Size = New-Object System.Drawing.Size(105, 25)
     
@@ -688,7 +777,7 @@ $menuLogcat.Add_Click({
 
     $global:activeLogcatForm.Controls.AddRange(@($script:cmbLevel, $script:chkCrash, $script:lblSearch, $script:txtSearchLog, $script:btnStartLogcat, $script:btnStopLogcat, $script:btnClearLogcat, $script:btnExportLogcat, $script:rtbLogs))
 
-    # Create a debounce timer to prevent the app from freezing while the user is typing.
+    # Add a typing delay timer so the search highlight doesn't freeze the app on large log buffers
     $script:searchDebounceTimer = New-Object System.Windows.Forms.Timer
     $script:searchDebounceTimer.Interval = 600
     
@@ -700,7 +789,6 @@ $menuLogcat.Add_Click({
         $savedStart = $script:rtbLogs.SelectionStart
         $savedLength = $script:rtbLogs.SelectionLength
         
-        # Clear existing highlights quickly
         $script:rtbLogs.SelectAll()
         if ($chkDarkMode.Checked) {
             $script:rtbLogs.SelectionBackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
@@ -713,7 +801,6 @@ $menuLogcat.Add_Click({
         if (-not [string]::IsNullOrWhiteSpace($keyword)) {
             $idx = 0
             $matchCount = 0
-            # Limit highlight processing to 1000 items to guarantee the UI never freezes on massive log buffers.
             while ($idx -lt $script:rtbLogs.TextLength -and $matchCount -lt 1000) {
                 $found = $script:rtbLogs.Find($keyword, $idx, [System.Windows.Forms.RichTextBoxFinds]::None)
                 if ($found -ne -1) {
@@ -741,7 +828,6 @@ $menuLogcat.Add_Click({
         $script:rtbLogs.ResumeLayout()
     })
 
-    # Reset the timer on every keystroke. Search only begins when the user stops typing.
     $script:txtSearchLog.Add_TextChanged({
         if ($null -ne $script:searchDebounceTimer) {
             $script:searchDebounceTimer.Stop()
@@ -750,7 +836,6 @@ $menuLogcat.Add_Click({
     })
 
     $script:btnStartLogcat.Add_Click({
-        # Lock the buttons immediately to prevent concurrent execution and app crashes.
         $script:btnStartLogcat.Enabled = $false
         $script:cmbLevel.Enabled = $false
         $script:chkCrash.Enabled = $false
@@ -789,9 +874,6 @@ $menuLogcat.Add_Click({
         $script:logFile = Join-Path ([System.IO.Path]::GetTempPath()) "adb_logcat_proxy_$tempGuid.log"
 
         try {
-            # Since logcat spawns an endless stream, we must STILL use native Start-Process here 
-            # (bypassing the .bat file) to properly pipe the output to our $script:logFile stream reader.
-            # We don't use -Wait here, so it safely runs in the background.
             $global:logcatProcess = Start-Process -FilePath "adb.exe" -ArgumentList $argList -RedirectStandardOutput $script:logFile -WindowStyle Hidden -PassThru -ErrorAction Stop
             
             $waitTicks = 0
@@ -819,7 +901,6 @@ $menuLogcat.Add_Click({
                         }
 
                         if ($newLogs.Length -gt 0) {
-                            # Limit the log text length to prevent OutOfMemory exceptions.
                             if ($script:rtbLogs.TextLength -gt 500000) {
                                 $script:rtbLogs.Clear()
                                 $script:rtbLogs.AppendText("--- BUFFER CLEARED TO PREVENT MEMORY OVERLOAD ---`n")
@@ -829,7 +910,6 @@ $menuLogcat.Add_Click({
                             $startIndex = $script:rtbLogs.TextLength
                             $script:rtbLogs.AppendText($newLogs.ToString())
                             
-                            # Scans only the newly appended text to apply active highlights efficiently.
                             $keyword = $script:txtSearchLog.Text
                             if (-not [string]::IsNullOrWhiteSpace($keyword)) {
                                 $idx = $startIndex
@@ -915,10 +995,7 @@ $menuLogcat.Add_Click({
         $sfd.Dispose()
     })
 
-    # Ensure proper cleanup when the user closes the Logcat window.
-    $global:activeLogcatForm.Add_FormClosing({
-        Invoke-LogcatCleanup
-    })
+    $global:activeLogcatForm.Add_FormClosing({ Invoke-LogcatCleanup })
 
     $global:activeLogcatForm.Add_FormClosed({
         if ($null -ne $script:searchDebounceTimer) {
@@ -936,10 +1013,9 @@ $menuLogcat.Add_Click({
 [void]$menuTools.DropDownItems.Add($menuLogcat)
 
 # =======================================================================================
-# NEW FEATURE: PULL APPS (Extract installed apps/games from device to PC)
+# Pull Apps (Extractor Interface)
 # =======================================================================================
 $menuPullApp = New-Object System.Windows.Forms.ToolStripMenuItem("Pull Apps")
-
 $menuPullApp.Add_Click({
     $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     $targetDev = Get-TargetDevice $menuWifi.Checked
@@ -962,9 +1038,7 @@ $menuPullApp.Add_Click({
     $pullForm.MinimizeBox = $false
     Enable-DoubleBuffer $pullForm
 
-    $pullForm.Add_HandleCreated({
-        Set-TitleBarTheme $pullForm $chkDarkMode.Checked
-    })
+    $pullForm.Add_HandleCreated({ Set-TitleBarTheme $pullForm $chkDarkMode.Checked })
 
     if ($chkDarkMode.Checked) {
         $pullForm.BackColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
@@ -978,7 +1052,6 @@ $menuPullApp.Add_Click({
     $pullForm.Controls.Add($lblDest)
 
     $txtDest = New-Object System.Windows.Forms.TextBox
-    # Adjusting layout constraints down a bit to prevent window frame text clipping
     $txtDest.Location = New-Object System.Drawing.Point(20, 42)
     $txtDest.Size = New-Object System.Drawing.Size(320, 20)
     if ($chkDarkMode.Checked) {
@@ -989,7 +1062,6 @@ $menuPullApp.Add_Click({
 
     $btnBrowseDest = New-Object System.Windows.Forms.Button
     $btnBrowseDest.Text = "Browse"
-    # Align browse button smoothly with the shifted destination text box
     $btnBrowseDest.Location = New-Object System.Drawing.Point(345, 40)
     $btnBrowseDest.Size = New-Object System.Drawing.Size(75, 24)
     $pullForm.Controls.Add($btnBrowseDest)
@@ -1058,11 +1130,8 @@ $menuPullApp.Add_Click({
     $btnExecutePull.Size = New-Object System.Drawing.Size(400, 35)
     $pullForm.Controls.Add($btnExecutePull)
 
-    $lblPullStatus = New-Object System.Windows.Forms.Label
-    $lblPullStatus.Text = "Status: Ready."
-    $lblPullStatus.Location = New-Object System.Drawing.Point(20, 475)
-    $lblPullStatus.Size = New-Object System.Drawing.Size(400, 40)
-    $pullForm.Controls.Add($lblPullStatus)
+    $script:pullProgress = Out-CustomProgressBar -Parent $pullForm -Location (New-Object System.Drawing.Point(20, 475)) -Size (New-Object System.Drawing.Size(400, 24))
+    Set-Progress -Control $script:pullProgress -Value 0 -Text "Ready."
 
     if ($chkDarkMode.Checked) {
         $flatBtns = @($btnBrowseDest, $btnLoadApps, $btnExecutePull)
@@ -1087,8 +1156,7 @@ $menuPullApp.Add_Click({
         $listPull.Items.Clear()
         $pullForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         $btnLoadApps.Enabled = $false
-        $lblPullStatus.Text = "Status: Fetching packages from device..."
-        [System.Windows.Forms.Application]::DoEvents()
+        Set-Progress -Control $script:pullProgress -Value 10 -Text "Fetching packages from device... 10%"
 
         $flag = ""
         if ($radUser.Checked) { $flag = "-3" }
@@ -1101,7 +1169,7 @@ $menuPullApp.Add_Click({
             [void]$listPull.Items.Add($p, $false)
         }
 
-        $lblPullStatus.Text = "Status: Found $($packages.Count) apps."
+        Set-Progress -Control $script:pullProgress -Value 0 -Text "Found $($packages.Count) apps."
         $btnLoadApps.Enabled = $true
         $pullForm.Cursor = [System.Windows.Forms.Cursors]::Default
     })
@@ -1139,15 +1207,13 @@ $menuPullApp.Add_Click({
 
         try {
             foreach ($pkg in $packagesToPull) {
-                $lblPullStatus.Text = "Status: Locating paths for $pkg..."
-                [System.Windows.Forms.Application]::DoEvents()
+                Set-Progress -Control $script:pullProgress -Value 20 -Text "Locating paths for $pkg... 20%"
 
                 $rawPaths = Run-AdbCommand "-s `"$script:targetDevLocked`" shell pm path `"$pkg`""
                 $paths = @($rawPaths -split "`r?`n" | Where-Object { $_ -match "^package:" } | ForEach-Object { $_.Substring(8).Trim() })
 
                 if ($paths.Count -eq 0) {
-                    $lblPullStatus.Text = "Status: $pkg not found on device. Skipping."
-                    [System.Windows.Forms.Application]::DoEvents()
+                    Set-Progress -Control $script:pullProgress -Value 0 -Text "$pkg not found on device. Skipping."
                     Start-Sleep -Seconds 1
                     continue
                 }
@@ -1156,16 +1222,12 @@ $menuPullApp.Add_Click({
                 if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
                 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
-                # Pull all APK parts
-                $lblPullStatus.Text = "Status: Pulling APK(s) for $pkg..."
-                [System.Windows.Forms.Application]::DoEvents()
+                Set-Progress -Control $script:pullProgress -Value 40 -Text "Pulling APK(s) for $pkg... 40%"
                 foreach ($p in $paths) {
                     Run-AdbCommand "-s `"$script:targetDevLocked`" pull `"$p`" `"$tempDir`"" | Out-Null
                 }
 
-                # Check if this app has an OBB directory
-                $lblPullStatus.Text = "Status: Checking OBB data for $pkg..."
-                [System.Windows.Forms.Application]::DoEvents()
+                Set-Progress -Control $script:pullProgress -Value 60 -Text "Checking OBB data for $pkg... 60%"
                 $hasObb = $false
                 
                 $obbCheck = Run-AdbCommand "-s `"$script:targetDevLocked`" shell ls `"/sdcard/Android/obb/$pkg`""
@@ -1173,8 +1235,7 @@ $menuPullApp.Add_Click({
                     $checkDir = Run-AdbCommand "-s `"$script:targetDevLocked`" shell `"if [ -d /sdcard/Android/obb/$pkg ]; then echo 1; else echo 0; fi`""
                     if ($checkDir.Trim() -eq "1") {
                         $hasObb = $true
-                        $lblPullStatus.Text = "Status: Pulling OBB data for $pkg (This might take a while)..."
-                        [System.Windows.Forms.Application]::DoEvents()
+                        Set-Progress -Control $script:pullProgress -Value 70 -Text "Pulling OBB data for $pkg... 70%"
                         
                         $obbDest = Join-Path $tempDir "Android\obb"
                         New-Item -ItemType Directory -Path $obbDest -Force | Out-Null
@@ -1182,46 +1243,38 @@ $menuPullApp.Add_Click({
                     }
                 }
 
-                $lblPullStatus.Text = "Status: Packaging $pkg..."
-                [System.Windows.Forms.Application]::DoEvents()
+                Set-Progress -Control $script:pullProgress -Value 80 -Text "Packaging $pkg... 80%"
 
                 if ($paths.Count -eq 1 -and -not $hasObb) {
-                    # Standard single APK. Move it out and rename it cleanly.
                     $apkFile = Get-ChildItem -Path $tempDir -Filter *.apk | Select-Object -First 1
                     if ($null -ne $apkFile) {
                         Move-Item -Path $apkFile.FullName -Destination (Join-Path $txtDest.Text "$pkg.apk") -Force
                     }
                 } else {
-                    # Bundle it up into a neat little .apks or .xapk
                     $ext = if ($hasObb) { ".xapk" } else { ".apks" }
                     $archivePath = Join-Path $txtDest.Text "$pkg$ext"
                     if (Test-Path $archivePath) { Remove-Item $archivePath -Force -ErrorAction SilentlyContinue }
                     
-                    # Compress-Archive natively rejects third-party extensions like .apks/.xapk directly.
-                    # We compress to a temporary .zip first, then safely rename/move it.
                     $tempZipPath = Join-Path ([System.IO.Path]::GetTempPath()) "bundle_archive_$([Guid]::NewGuid().ToString('N')).zip"
                     Compress-Archive -Path "$tempDir\*" -DestinationPath $tempZipPath -Force
                     Move-Item -Path $tempZipPath -Destination $archivePath -Force
                 }
 
-                # Clean up the localized mess right away
                 if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
             }
 
-            $lblPullStatus.Text = "Status: All selected apps successfully pulled!"
+            Set-Progress -Control $script:pullProgress -Value 100 -Text "All selected apps successfully pulled! 100%"
             [System.Media.SystemSounds]::Exclamation.Play()
             [void][System.Windows.Forms.MessageBox]::Show("Pull complete! Check your destination folder.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 
         } catch {
-            $lblPullStatus.Text = "Status: Error occurred during pull."
+            Set-Progress -Control $script:pullProgress -Value 0 -Text "Error occurred during pull."
             [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         } finally {
-            # Ensure the directory gets wiped regardless of crashes or unexpected runtime exceptions.
             if (-not [string]::IsNullOrEmpty($tempDir) -and (Test-Path $tempDir)) { 
                 Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue 
             }
 
-            # Safety first: Terminate ADB server interface lock immediately if logcat streaming is inactive.
             if ($null -eq $global:logcatProcess -or $global:logcatProcess.HasExited) {
                 Write-Log "Releasing ADB interface lock after App Pull operation..."
                 Start-Process -FilePath "adb.exe" -ArgumentList "kill-server" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
@@ -1233,6 +1286,9 @@ $menuPullApp.Add_Click({
             $btnBrowseDest.Enabled = $true
             $txtManualPkg.Enabled = $true
             $listPull.Enabled = $true
+            
+            Start-Sleep -Seconds 2
+            Set-Progress -Control $script:pullProgress -Value 0 -Text "Ready."
         }
     })
 
@@ -1241,10 +1297,10 @@ $menuPullApp.Add_Click({
 })
 
 [void]$menuTools.DropDownItems.Add($menuPullApp)
+
 # =======================================================================================
-
-
-# Help menu configuration.
+# Main Window Setup
+# =======================================================================================
 $menuHelp = New-Object System.Windows.Forms.ToolStripMenuItem("Help")
 $menuAbout = New-Object System.Windows.Forms.ToolStripMenuItem("About")
 
@@ -1311,13 +1367,8 @@ $btnRemove.Dock = [System.Windows.Forms.DockStyle]::Fill
 $btnRemove.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 $tlpTopButtons.Controls.Add($btnRemove, 4, 0)
 
-$progress = New-Object System.Windows.Forms.ProgressBar
-$progress.Size = New-Object System.Drawing.Size(480,20)
-$progress.Location = New-Object System.Drawing.Point(10,275)
-$progress.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-$progress.Minimum = 0
-$progress.Maximum = 100
-$form.Controls.Add($progress)
+$script:mainProgress = Out-CustomProgressBar -Parent $form -Location (New-Object System.Drawing.Point(10, 275)) -Size (New-Object System.Drawing.Size(480, 24))
+Set-Progress -Control $script:mainProgress -Value 0 -Text "Ready"
 
 $log = New-Object System.Windows.Forms.TextBox
 $log.Multiline = $true
@@ -1369,7 +1420,6 @@ $radAurora.Location = New-Object System.Drawing.Point(90,20)
 $radAurora.AutoSize = $true
 $grpSource.Controls.Add($radAurora)
 
-# Configures spatial coordinates for the F-Droid Basic radio control.
 $radFdroid = New-Object System.Windows.Forms.RadioButton
 $radFdroid.Text = "F-Droid Basic"
 $radFdroid.Location = New-Object System.Drawing.Point(180,20)
@@ -1382,7 +1432,6 @@ $radCustom.Location = New-Object System.Drawing.Point(275,20)
 $radCustom.AutoSize = $true
 $grpSource.Controls.Add($radCustom)
 
-# Set up a directory in AppData to save the user's custom fake installer name.
 $processName = [System.Diagnostics.Process]::GetCurrentProcess().ProcessName
 $cfgFolder = Join-Path $env:APPDATA $processName
 
@@ -1596,6 +1645,9 @@ function Apply-Theme([bool]$IsDark) {
 
         $global:activeLogcatForm.ResumeLayout($true)
     }
+    
+    if ($null -ne $script:mainProgress) { $script:mainProgress.Invalidate() }
+    if ($null -ne $script:pullProgress) { $script:pullProgress.Invalidate() }
 }
 
 function Load-ApkList {
@@ -1793,7 +1845,6 @@ $menuAbout.Add_Click({
 $btnUninstall.Add_Click({
     $inputForm = New-Object System.Windows.Forms.Form
     $inputForm.Text = "Uninstall App"
-    # Keep the uninstall window bounds fixed to prevent layout issues when maximizing.
     $inputForm.Size = New-Object System.Drawing.Size(460, 295)
     $inputForm.StartPosition = "CenterParent"
     $inputForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -1921,7 +1972,6 @@ $btnUninstall.Add_Click({
             if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                 $inputForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
                 
-                # Parse the raw ADB output into a clean, sorted list.
                 function Parse-PackageList($rawOutput) {
                     return @($rawOutput -split "`r?`n" | Where-Object { $_ -match "^package:" } | ForEach-Object { $_.Replace("package:","").Trim() } | Sort-Object -Unique)
                 }
@@ -1985,7 +2035,6 @@ $btnUninstall.Add_Click({
     
     $inputForm.AcceptButton = $btnOk
 
-    # Expand the dialog width if the main window is maximized or resized.
     if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Maximized -or $form.Width -gt 700) {
         $inputForm.Width = 650
     }
@@ -1995,7 +2044,7 @@ $btnUninstall.Add_Click({
             $pkgName = $txtPkg.Text.Trim()
             if (-not [string]::IsNullOrWhiteSpace($pkgName)) {
                 
-                # Validates the package name format to prevent shell injection vulnerabilities.
+                # Check package name format to prevent shell injection
                 if ($pkgName -notmatch '^[a-zA-Z0-9\._\-]+$') {
                     [void][System.Windows.Forms.MessageBox]::Show("Invalid package name format. Only alphanumeric characters, dots, underscores, and dashes are allowed.", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                     return
@@ -2092,9 +2141,8 @@ $btnInstall.Add_Click({
     $chkReinstall.Enabled = $false
     $chkDarkMode.Enabled = $false
     $grpSource.Enabled = $false
-    $progress.Value = 0
+    Set-Progress -Control $script:mainProgress -Value 0 -Text "Ready"
 
-    # Lock drag-and-drop during installation to prevent list modification exceptions.
     $list.AllowDrop = $false
 
     try {
@@ -2127,11 +2175,10 @@ $btnInstall.Add_Click({
         
         Write-Log "Target device: $targetDev"
 
-        # Create a snapshot of the checked items to avoid errors if the UI changes during the loop.
         $snapshotItems = @($list.CheckedItems)
 
         foreach ($itemText in $snapshotItems) {
-            $progress.Value = 0
+            Set-Progress -Control $script:mainProgress -Value 0 -Text "Starting..."
             $apk = $script:apkMap[$itemText]
             $originalName = Split-Path $apk -Leaf
             $ext = [System.IO.Path]::GetExtension($apk).ToLower()
@@ -2141,9 +2188,9 @@ $btnInstall.Add_Click({
             
             if ($ext -match '\.(apks|xapk|apkm|zip)$') {
                 Write-Log "Detected Bundle/Split Package ($ext). Validating & Extracting..."
-                $progress.Value = 10
+                Set-Progress -Control $script:mainProgress -Value 10 -Text "Validating Archive... 10%"
                 
-                # Memory-safe ZIP Bomb Validation
+                # Check for ZIP bombs before extracting
                 $isValid = $true
                 $zip = $null
                 try {
@@ -2168,13 +2215,12 @@ $btnInstall.Add_Click({
 
                 if (-not $isValid) { continue }
                 
-                $progress.Value = 20
+                Set-Progress -Control $script:mainProgress -Value 20 -Text "Extracting Bundle... 20%"
                 $tempExtDir = Join-Path ([System.IO.Path]::GetTempPath()) "bundle_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
                 New-Item -ItemType Directory -Path $tempExtDir -Force | Out-Null
                 
                 try {
                     [System.Windows.Forms.Application]::DoEvents()
-                    # Native fast extraction
                     [System.IO.Compression.ZipFile]::ExtractToDirectory($apk, $tempExtDir)
                     
                     $baseApkCheck = Get-ChildItem -Path $tempExtDir -Filter 'base.apk' -Recurse
@@ -2197,7 +2243,7 @@ $btnInstall.Add_Click({
                     
                     Write-Log "Found $($splitApks.Count) split APKs. Installing via install-multiple..."
                     Write-Log "(Fake Source: $installerSource)"
-                    $progress.Value = 50
+                    Set-Progress -Control $script:mainProgress -Value 50 -Text "Installing Split APKs... 50%"
                     
                     $multipleArgs = "-s `"$targetDev`" install-multiple"
                     if ($chkReinstall.Checked) {
@@ -2212,9 +2258,8 @@ $btnInstall.Add_Click({
                     
                     $installResult = Run-AdbCommand $multipleArgs
                     Write-Log "Result: $installResult"
-                    $progress.Value = 80
+                    Set-Progress -Control $script:mainProgress -Value 80 -Text "Finishing Installation... 80%"
                     
-                    # Check for OBB data inside .xapk
                     $obbFolder = Join-Path $tempExtDir "Android\obb"
                     if (Test-Path $obbFolder) {
                         $obbItems = Get-ChildItem -Path $obbFolder -Directory
@@ -2227,7 +2272,7 @@ $btnInstall.Add_Click({
                         }
                     }
                     
-                    $progress.Value = 100
+                    Set-Progress -Control $script:mainProgress -Value 100 -Text "Completed: $originalName 100%"
                     
                 } catch {
                     Write-Log "Extraction or installation failed: $_"
@@ -2235,11 +2280,11 @@ $btnInstall.Add_Click({
                     if (Test-Path $tempExtDir) { Remove-Item $tempExtDir -Recurse -Force -ErrorAction SilentlyContinue }
                 }
             } else {
-                # Single APK installation
+                # Handle standard single APK
                 $safeName = "install_$([Guid]::NewGuid().ToString('N').Substring(0,8)).apk"
                 
                 Write-Log "Pushing to device..."
-                $progress.Value = 30
+                Set-Progress -Control $script:mainProgress -Value 30 -Text "Pushing to Device... 30%"
                 
                 $pushArg = "-s `"$targetDev`" push `"$apk`" `"/data/local/tmp/$safeName`""
                 $pushResult = Run-AdbCommand $pushArg
@@ -2247,7 +2292,7 @@ $btnInstall.Add_Click({
 
                 Write-Log "Installing..."
                 Write-Log "(Fake Source: $installerSource)"
-                $progress.Value = 70
+                Set-Progress -Control $script:mainProgress -Value 70 -Text "Installing APK... 70%"
                 
                 if ($chkReinstall.Checked) {
                     Write-Log "(Using -r flag for reinstallation)"
@@ -2260,7 +2305,7 @@ $btnInstall.Add_Click({
                 $installResult = Run-AdbCommand $installArg
                 Write-Log "Result: $installResult"
                 
-                $progress.Value = 100
+                Set-Progress -Control $script:mainProgress -Value 100 -Text "Completed: $originalName 100%"
                 
                 for ($w = 0; $w -lt 15; $w++) {
                     [System.Windows.Forms.Application]::DoEvents()
@@ -2290,7 +2335,7 @@ $btnInstall.Add_Click({
         }
         
         Start-Sleep -Seconds 1
-        $progress.Value = 0
+        Set-Progress -Control $script:mainProgress -Value 0 -Text "Ready"
         $btnInstall.Enabled = $true
         $btnUninstall.Enabled = $true
         $menuStrip.Enabled = $true
